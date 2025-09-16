@@ -1,393 +1,370 @@
-# -*- coding: utf-8 -*-
-# 실행: streamlit run --server.port 3000 --server.address 0.0.0.0 streamlit_app.py
+# streamlit_app.py
+"""
+Streamlit 대시보드 (한국어)
+- 공개 데이터 대시보드: 기후(온도 이상치) + 고용(산업별 고용비율(World Bank)) 연계 시각화
+  - 출처 주석:
+    * NASA GISTEMP (Global temperature anomalies CSV): https://data.giss.nasa.gov/gistemp/
+      (직접 CSV: https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv)
+    * World Bank - Employment in industry (% of total employment): https://data.worldbank.org/indicator/SL.IND.EMPL.ZS
+    * ILO / Green jobs 참고자료: https://ilostat.ilo.org/data/ , https://www.ilo.org/
+- 사용자 입력(프롬프트 텍스트 기반) 대시보드: 제공된 리포트 텍스트에서 생성한 예시 데이터로 시각화
+- 구현 규칙 준수:
+  - 데이터 표준화: date, value, group(optional)
+  - 전처리: 결측/형변환/중복/미래데이터 제거
+  - 캐싱: @st.cache_data 사용
+  - CSV 다운로드 버튼 제공
+  - 폰트: /fonts/Pretendard-Bold.ttf 사용 시 적용 시도
+"""
 
-import datetime
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
 import streamlit as st
-import xarray as xr
-
-# --- 안전한 Matplotlib/폰트 설정 ---
-import matplotlib
+import pandas as pd
+import numpy as np
+import requests
+import io
+import datetime
+from dateutil import parser
+import plotly.express as px
+import plotly.graph_objects as go
 import matplotlib.pyplot as plt
-from matplotlib import font_manager as fm, rcParams
-from matplotlib.colors import TwoSlopeNorm
-import matplotlib.patheffects as pe
-import matplotlib.patches as patches
+import seaborn as sns
 
-# --- Cartopy는 환경에 따라 설치 실패 가능 → 옵셔널 로딩 ---
-USE_CARTOPY = True
-try:
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-except Exception:
-    USE_CARTOPY = False
+TODAY = datetime.date(2025, 9, 16)  # 명시된 로컬 날짜 (developer message)
+# NOTE: 앱은 실행 환경의 실제 날짜를 query하지 않고 위 TODAY를 기준으로 "오늘 이후" 데이터 제거 규칙을 적용합니다.
 
-# -------------------------------------------------
-# 전역 스타일/폰트
-# -------------------------------------------------
-def setup_font():
-    """Pretendard 없으면 서버 기본 한글 폰트 후보로 폴백."""
-    font_path = Path(__file__).parent / "fonts" / "Pretendard-Bold.ttf"
-    if font_path.exists():
-        fm.fontManager.addfont(str(font_path))
-        font_name = fm.FontProperties(fname=str(font_path)).get_name()
-        rcParams["font.family"] = font_name
-    else:
-        # 서버/도커에서 흔한 한글 폰트 후보
-        for cand in ["NanumGothic", "Noto Sans CJK KR", "AppleGothic"]:
-            try:
-                rcParams["font.family"] = cand
-                break
-            except Exception:
-                pass
-    rcParams["axes.unicode_minus"] = False
-    rcParams["axes.spines.top"] = False
-    rcParams["axes.spines.right"] = False
-    rcParams["axes.grid"] = True
-    rcParams["grid.alpha"] = 0.25
+st.set_page_config(page_title="기후와 취업 대시보드", layout="wide")
 
-setup_font()
-PE = [pe.withStroke(linewidth=2.5, foreground="white")]
-
-st.set_page_config(page_title="뜨거워지는 바다: SST 대시보드", layout="wide", page_icon="🌊")
-
-# -------------------------------------------------
-# NOAA OISST v2 High-Res (0.25°) 일일 데이터 (연도별 파일)
-# -------------------------------------------------
-BASE_URL = "https://psl.noaa.gov/thredds/dodsC/Datasets/noaa.oisst.v2.highres/sst.day.mean.{year}.nc"
-
-# -------------------------------------------------
-# 데이터 로더: 'nearest + tolerance' + 연-경계/폴백 탐색 + 캐시
-# -------------------------------------------------
-@st.cache_data(show_spinner=False, ttl=3600)
-def load_sst(date: datetime.date, lat_range=(28, 42), lon_range=(120, 135)):
-    """
-    - 선택 날짜가 time index에 정확히 없을 때 발생하는
-      "not all values found in index 'time' ..." 문제에 대응
-    - 1) nearest + tolerance(3일) → 2) 7일 범위에서 과거로 폴백 탐색
-    - 연도 경계 자동 처리
-    - 반환: (DataArray, 실제사용날짜date) 또는 (None, None)
-    """
-
-    def _open_year(y: int):
-        url = BASE_URL.format(year=y)
-        # pydap 미설치 환경이 많으므로 기본엔진 → 실패 시 pydap
-        try:
-            ds = xr.open_dataset(url)  # netCDF4/OPeNDAP 자동
-        except Exception:
-            ds = xr.open_dataset(url, engine="pydap")
-        return ds.sortby("time")
-
+# --- 폰트 적용 시도 ---
+def inject_pretendard():
+    css = ""
     try:
-        ds_main = _open_year(date.year)
+        # relative path /fonts/Pretendard-Bold.ttf (if Codespaces repo includes it)
+        css = f"""
+        <style>
+        @font-face {{
+            font-family: 'PretendardCustom';
+            src: url('/fonts/Pretendard-Bold.ttf') format('truetype');
+            font-weight: 700;
+            font-style: normal;
+        }}
+        html, body, [class*="css"]  {{
+            font-family: PretendardCustom, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+        }}
+        </style>
+        """
+        st.markdown(css, unsafe_allow_html=True)
+    except Exception:
+        # 실패 시 무시 (자동 생략)
+        pass
 
-        # 1) 가까운 날짜 자동 선택 (허용오차 3일)
+inject_pretendard()
+
+# --- 유틸리티: 미래(오늘 이후) 날짜 제거 ---
+def remove_future_dates(df, date_col="date"):
+    if date_col not in df.columns:
+        return df
+    def to_date_safe(x):
         try:
-            da = (
-                ds_main["sst"]
-                .sel(time=np.datetime64(date), method="nearest", tolerance=np.timedelta64(3, "D"))
-                .sel(lat=slice(*lat_range), lon=slice(*lon_range))
-                .squeeze()
-            )
-            da.load()
-            if np.isfinite(da.values).any():
-                used_date = pd.to_datetime(da["time"].item()).date()
-                return da, used_date
+            return pd.to_datetime(x).date()
         except Exception:
-            pass
+            return None
+    df['_parsed_date'] = df[date_col].apply(to_date_safe)
+    df = df[df['_parsed_date'].notnull()]
+    df = df[df['_parsed_date'] <= TODAY]
+    df = df.drop(columns=['_parsed_date'])
+    return df
 
-        # 2) 실패 시 7일 동안 과거로 하루씩 물러나며 탐색 (연도 경계 포함)
-        for back in range(1, 8):
-            dt = date - datetime.timedelta(days=back)
-            ds = ds_main if dt.year == date.year else _open_year(dt.year)
+# --- 캐시된 다운로드 helpers ---
+@st.cache_data(ttl=3600)
+def fetch_gistemp_csv():
+    """
+    NASA GISTEMP CSV (global monthly anomalies)
+    공식 출처: https://data.giss.nasa.gov/gistemp/
+    안정적인 표형식 CSV: https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv
+    """
+    url = "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv"
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        content = r.content.decode('utf-8', errors='replace')
+        # GISTEMP table has header lines; pandas can read skipping comment lines starting with 'Year'
+        df = pd.read_csv(io.StringIO(content), skiprows=1)
+        # transform: months in columns -> long format with date
+        df = df.rename(columns={c: c.strip() for c in df.columns})
+        df_long = df.melt(id_vars=['Year'], var_name='Month', value_name='Anomaly')
+        # Month might be 'Jan', 'Feb', etc. Build date
+        month_map = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12,'J-D':None,'DJF':None}
+        def to_date(row):
+            m = row['Month']
+            y = int(row['Year'])
+            if isinstance(m, str):
+                m_clean = m.strip()
+                mon = month_map.get(m_clean, None)
+                if mon:
+                    return datetime.date(y, mon, 1)
+            return None
+        df_long['date'] = df_long.apply(to_date, axis=1)
+        df_long = df_long[df_long['date'].notnull()].copy()
+        df_long = df_long[['date','Anomaly']].rename(columns={'Anomaly':'value'})
+        # remove future dates
+        df_long = remove_future_dates(df_long, 'date')
+        df_long['group'] = '지구 평균 기온 이상치(℃)'
+        df_long['value'] = pd.to_numeric(df_long['value'], errors='coerce')
+        df_long = df_long.dropna(subset=['value'])
+        return df_long.sort_values('date')
+    except Exception as e:
+        # 실패 -> None to indicate fallback
+        return None
+
+@st.cache_data(ttl=3600)
+def fetch_worldbank_employment():
+    """
+    World Bank API: Employment in industry (% of total employment) - indicator SL.IND.EMPL.ZS
+    API: http://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS?format=json&per_page=20000
+    출처: https://data.worldbank.org/indicator/SL.IND.EMPL.ZS
+    """
+    api = "http://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS"
+    params = {'format':'json','per_page':20000}
+    try:
+        r = requests.get(api, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        # data[1] has records
+        records = data[1]
+        rows = []
+        for rec in records:
+            country = rec.get('country', {}).get('value')
+            year = rec.get('date')
+            val = rec.get('value')
+            if val is None:
+                continue
             try:
-                da = (
-                    ds["sst"]
-                    .sel(time=np.datetime64(dt))  # 정확 일치 시도
-                    .sel(lat=slice(*lat_range), lon=slice(*lon_range))
-                    .squeeze()
-                )
-                da.load()
-                if np.isfinite(da.values).any():
-                    used_date = pd.to_datetime(da["time"].item()).date()
-                    return da, used_date
+                d = datetime.date(int(year),1,1)
             except Exception:
                 continue
+            rows.append({'date':d, 'country':country, 'value':float(val)})
+        df = pd.DataFrame(rows)
+        # remove future dates
+        df = df[df['date'] <= TODAY]
+        # Standardize: date,value,group(country)
+        df = df.rename(columns={'country':'group'})
+        return df
+    except Exception:
+        return None
 
-        return None, None
+# --- 예시(대체) 데이터 생성 함수 ---
+def sample_climate_data():
+    # 간단한 예시: 연별 평균 이상치 (2010-2024)
+    years = list(range(2010, 2025))
+    dates = [datetime.date(y,1,1) for y in years]
+    # synthetic increasing anomalies
+    values = np.round(np.linspace(0.6, 1.2, len(years)) + np.random.normal(0,0.05,len(years)), 3)
+    df = pd.DataFrame({'date':dates, 'value':values})
+    df['group'] = '지구 평균 기온 이상치(℃)'
+    return df
 
-    except Exception as e:
-        st.error(f"데이터 불러오기 실패: {e}")
-        return None, None
+def sample_employment_data():
+    # 예시: 산업별 고용비율(연도별) - 간단화: industry% for Korea and OECD-average
+    years = list(range(2015, 2025))
+    rows = []
+    for y in years:
+        rows.append({'date':datetime.date(y,1,1), 'group':'한국 산업 고용 비율(%)', 'value': float(25.0 - (2024-y)*0.2 + np.random.normal(0,0.5))})
+        rows.append({'date':datetime.date(y,1,1), 'group':'세계 산업 고용 비율(%)', 'value': float(22.0 - (2024-y)*0.1 + np.random.normal(0,0.5))})
+    return pd.DataFrame(rows)
 
-# -------------------------------------------------
-# 플로팅 (Cartopy 있으면 지도 투영, 없으면 평면 대체)
-# -------------------------------------------------
-def plot_sst(da, date, extent=(120, 135, 28, 42)):
-    # 계절/날짜 변화에 안전한 컬러 스케일
-    arr = da.values
-    if not np.isfinite(arr).any():
-        raise ValueError("SST 값이 모두 NaN입니다.")
+# --- 공개 데이터 로드 (시도 -> 재시도 -> 실패 시 예시 데이터 할당) ---
+st.sidebar.title("데이터 로드 상태")
+with st.spinner("공식 공개 데이터 불러오는 중..."):
+    gistemp_df = fetch_gistemp_csv()
+    wb_df = fetch_worldbank_employment()
 
-    vmin = float(np.nanpercentile(arr, 5))
-    vmax = float(np.nanpercentile(arr, 95))
-    # 시인성 좋은 중심값(따뜻한 계절 가중) 또는 중간값
-    vcenter = min(max(29.0, vmin + (vmax - vmin) * 0.6), vmax - 0.1)
-    norm = TwoSlopeNorm(vmin=vmin, vcenter=vcenter, vmax=vmax)
+# retry logic: if None, retry once
+if gistemp_df is None:
+    gistemp_df = fetch_gistemp_csv()
+if wb_df is None:
+    wb_df = fetch_worldbank_employment()
 
-    if USE_CARTOPY:
-        fig, ax = plt.subplots(figsize=(9, 6), subplot_kw={"projection": ccrs.PlateCarree()})
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
-        im = da.plot.pcolormesh(
-            ax=ax, x="lon", y="lat",
-            transform=ccrs.PlateCarree(),
-            cmap="YlOrRd", norm=norm, add_colorbar=False
-        )
-        ax.coastlines()
-        ax.add_feature(cfeature.LAND, facecolor="lightgray")
-        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
-    else:
-        # Cartopy 미사용 평면 대체 (환경 호환 모드)
-        fig, ax = plt.subplots(figsize=(9, 6))
-        im = da.plot.pcolormesh(
-            ax=ax, x="lon", y="lat",
-            cmap="YlOrRd", norm=norm, add_colorbar=False
-        )
-        ax.set_xlim(extent[0], extent[1])
-        ax.set_ylim(extent[2], extent[3])
-        ax.set_xlabel("경도")
-        ax.set_ylabel("위도")
-        ax.grid(alpha=0.25)
-        st.info("지도가 간소화된 평면 모드로 표시되었습니다 (Cartopy 미사용).", icon="ℹ️")
-
-    cbar = fig.colorbar(im, ax=ax, orientation="vertical", pad=0.05)
-    cbar.set_label("해수면 온도 (℃)")
-    ax.set_title(f"해수면 온도: {date.strftime('%Y-%m-%d')}")
-    return fig
-
-# -------------------------------------------------
-# 미니 차트 유틸 (Bullet / Lollipop / Combo / Waffle)
-# -------------------------------------------------
-def bullet(ax, value, target, label="", color="#F28E2B"):
-    lo, hi = min(value, target), max(value, target)
-    pad = (hi - lo) * 0.5 + 0.5
-    vmin, vmax = lo - pad, hi + pad
-    ax.barh([0], [vmax - vmin], left=vmin, color="#EEEEEE", height=0.36)
-    ax.barh([0], [value - vmin], left=vmin, color=color, height=0.36)
-    ax.axvline(target, color="#333333", lw=2.2)
-    ax.set_yticks([]); ax.set_xlim(vmin, vmax); ax.set_xlabel("℃"); ax.set_title(label)
-    delta = value - target
-    badge = f"+{delta:.1f}℃" if delta >= 0 else f"{delta:.1f}℃"
-    ax.text(value, 0.1, f"{value:.1f}℃", ha="left", va="bottom", weight="bold", path_effects=PE)
-    ax.text(0.02, 0.9, badge, transform=ax.transAxes,
-            fontsize=12, weight="bold", color="white", path_effects=PE,
-            bbox=dict(boxstyle="round,pad=0.35",
-                      facecolor="#C1272D" if delta>=0 else "#2B7A78",
-                      edgecolor="none"))
-
-def lollipop_horizontal(ax, labels, values, title, unit="℃", color="#4C78A8", highlight_color="#E45756"):
-    idx = np.argsort(values)[::-1]
-    labels_sorted = [labels[i] for i in idx]
-    values_sorted = [values[i] for i in idx]
-    y = np.arange(len(labels_sorted))
-    ax.hlines(y, [0]*len(values_sorted), values_sorted, color="#CCCCCC", lw=3)
-    vmax_i = int(np.argmax(values_sorted))
-    for i, v in enumerate(values_sorted):
-        col = highlight_color if i == vmax_i else color
-        ax.plot(v, y[i], "o", ms=10, mfc=col, mec=col)
-        ax.text(v + max(values_sorted)*0.03, y[i],
-                f"{v:.2f}{unit}" if unit.endswith("년") else f"{v:.1f}{unit}",
-                va="center", weight="bold" if i == vmax_i else 500, color=col, path_effects=PE)
-    ax.set_yticks(y, labels_sorted); ax.set_xlabel(unit); ax.set_title(title); ax.grid(axis="x", alpha=0.25)
-
-def combo_bar_line(ax, x_labels, bars, line, bar_color="#FDB863", line_color="#C1272D"):
-    x = np.arange(len(x_labels))
-    ax.bar(x, bars, color=bar_color, width=0.55)
-    ax.set_xticks(x, x_labels); ax.set_ylabel("총 환자 수(명)")
-    ax2 = ax.twinx()
-    ax2.plot(x, line, marker="o", ms=7, lw=2.5, color=line_color)
-    ax2.set_ylabel("총 사망자 수(명)", color=line_color)
-
-def waffle(ax, percent, rows=10, cols=10, on="#F03B20", off="#EEEEEE", title=None):
-    total = rows*cols
-    k = int(round(percent/100*total))
-    for i in range(total):
-        r = i // cols; c = i % cols
-        color = on if i < k else off
-        rect = patches.Rectangle((c, rows-1-r), 0.95, 0.95, facecolor=color, edgecolor="white")
-        ax.add_patch(rect)
-    ax.set_xlim(0, cols); ax.set_ylim(0, rows); ax.axis("off")
-    if title: ax.set_title(title)
-    ax.text(cols/2, rows/2, f"{percent:.0f}%", ha="center", va="center",
-            fontsize=20, weight="bold", color="#333", path_effects=PE)
-
-# -------------------------------------------------
-# 본문 UI
-# -------------------------------------------------
-st.title("🌊 뜨거워지는 지구: 해수면 온도 상승이 고등학생에게 미치는 영향")
-
-st.header("I. 서론: 뜨거워지는 바다, 위협받는 교실")
-st.markdown("""
-한반도는 지구 평균보다 2~3배 빠른 해수면 온도 상승을 겪고 있으며, 이는 더 이상 추상적인 환경 문제가 아니라
-미래 세대의 학습권과 건강을 직접적으로 위협하는 현실입니다. 본 보고서는 고등학생을 기후 위기의 가장 취약한 집단이자
-변화의 핵심 동력으로 조명하며, 해수면 온도(SST) 상승의 실태와 파급효과를 다각도로 분석합니다.
-""")
-
-st.header("II. 조사 계획")
-st.subheader("1) 조사 기간")
-st.markdown("2025년 7월 ~ 2025년 8월")
-st.subheader("2) 조사 방법과 대상")
-st.markdown("""
-- **데이터 분석**: NOAA OISST v2 High Resolution Dataset  
-- **문헌 조사**: 기상청, 연구 논문, 보도자료 등  
-- **대상**: 대한민국 고등학생의 건강·학업·사회경제적 영향
-""")
-
-st.header("III. 조사 결과")
-st.subheader("1) 한반도 주변 해수면 온도 상황")
-
-# 날짜 기본값: 매우 최신은 공란일 수 있으므로 D-2
-today = datetime.date.today()
-default_date = min(today - datetime.timedelta(days=2), today)  # 미래 선택 방지
-date = st.date_input("날짜 선택", value=default_date, max_value=today)
-
-with st.spinner("데이터 불러오는 중..."):
-    da, used_date = load_sst(date)
-
-if da is not None:
-    st.pyplot(plot_sst(da, used_date), clear_figure=True)
-    if used_date != date:
-        st.caption(f"선택 날짜에 데이터가 없어 **{used_date.strftime('%Y-%m-%d')}** 자료로 대체했습니다.")
+# If still None -> fallback example and show notice
+if gistemp_df is None:
+    st.sidebar.error("NASA GISTEMP 데이터 로드 실패: 예시(대체) 데이터 사용")
+    gistemp_df = sample_climate_data()
 else:
-    st.warning("해당 기간에 유효한 데이터를 찾지 못했습니다. 날짜를 바꿔보세요.")
+    st.sidebar.success("NASA GISTEMP 데이터 로드 성공")
 
-# ----------------------- 인포 차트들 -----------------------
-st.subheader("📈 최근 기록과 평년 대비 편차 (예시)")
-c1, c2, c3 = st.columns(3)
-with c1:
-    fig, ax = plt.subplots(figsize=(5,2.6))
-    bullet(ax, 23.2, 21.2, label="2024-10 vs 최근10년")
-    st.pyplot(fig, clear_figure=True)
-with c2:
-    fig, ax = plt.subplots(figsize=(5,2.6))
-    bullet(ax, 19.8, 19.2, label="2023 연평균 vs 2001–2020", color="#2E86AB")
-    st.pyplot(fig, clear_figure=True)
-with c3:
-    fig, ax = plt.subplots(figsize=(5,2.6))
-    bullet(ax, 22.6, 22.6-2.8, label="서해 2024-10 vs 최근10년", color="#E67E22")
-    st.pyplot(fig, clear_figure=True)
+if wb_df is None or wb_df.empty:
+    st.sidebar.error("World Bank 고용(산업별) 데이터 로드 실패: 예시(대체) 데이터 사용")
+    wb_df = sample_employment_data()
+else:
+    st.sidebar.success("World Bank 데이터 로드 성공 (산업별 고용)")
 
-st.subheader("📊 해역별 장·단기 상승과 편차 (예시)")
-regions = ["동해", "서해", "남해"]
-rise_1968_2008 = [1.39, 1.23, 1.27]
-rate_since_2010 = [0.36, 0.54, 0.38]
-anom_2024 = [3.4, 2.8, 1.1]
-cL1, cL2, cL3 = st.columns(3)
-with cL1:
-    fig, ax = plt.subplots(figsize=(4.8,3))
-    lollipop_horizontal(ax, regions, rise_1968_2008, title="장기 상승폭 (1968–2008)", unit="℃")
-    st.pyplot(fig, clear_figure=True)
-with cL2:
-    fig, ax = plt.subplots(figsize=(4.8,3))
-    lollipop_horizontal(ax, regions, rate_since_2010, title="연평균 상승률 (2010~)", unit="℃/년", color="#59A14F")
-    st.pyplot(fig, clear_figure=True)
-with cL3:
-    fig, ax = plt.subplots(figsize=(4.8,3))
-    lollipop_horizontal(ax, regions, anom_2024, title="2024 편차", unit="℃", color="#F28E2B")
-    st.pyplot(fig, clear_figure=True)
+# --- 공개 데이터 전처리 공통 함수 ---
+@st.cache_data
+def preprocess_public_climate(df):
+    dfc = df.copy()
+    # ensure date dtype
+    dfc['date'] = pd.to_datetime(dfc['date'])
+    dfc = dfc.sort_values('date')
+    # remove duplicates
+    dfc = dfc.drop_duplicates(subset=['date'])
+    # remove future dates (already applied but safe)
+    dfc = dfc[dfc['date'].dt.date <= TODAY]
+    # fill missing values by interpolation
+    if dfc['value'].isnull().any():
+        dfc['value'] = dfc['value'].interpolate().fillna(method='bfill').fillna(method='ffill')
+    return dfc
 
-st.subheader("2) 지구에 미치는 영향: 극단적 기상 현상의 심화")
-st.markdown("""
-해수면 온도 상승은 대기와 상호작용하며 지구 전체의 기상 시스템을 교란합니다.
-- **더 강력한 태풍**: 따뜻한 바다는 태풍에 더 많은 에너지를 공급합니다.
-- **집중호우 빈발**: 기온이 1℃ 오르면 대기가 머금을 수 있는 수증기량은 약 7% 증가합니다.
-- **혹독한 폭염**: 열돔(Heat Dome) 현상으로 폭염이 장기화됩니다.
-""")
+@st.cache_data
+def preprocess_public_employment(df):
+    dfe = df.copy()
+    dfe['date'] = pd.to_datetime(dfe['date'])
+    dfe = dfe.sort_values(['group','date']) if 'group' in dfe.columns else dfe.sort_values(['date'])
+    # dedupe
+    dfe = dfe.drop_duplicates(subset=['date','group'] if 'group' in dfe.columns else ['date'])
+    # remove future dates
+    dfe = dfe[dfe['date'].dt.date <= TODAY]
+    dfe['value'] = pd.to_numeric(dfe['value'], errors='coerce')
+    # fill missing per group
+    if 'group' in dfe.columns:
+        dfe['value'] = dfe.groupby('group')['value'].apply(lambda s: s.interpolate().fillna(method='bfill').fillna(method='ffill'))
+    else:
+        dfe['value'] = dfe['value'].interpolate().fillna(method='bfill').fillna(method='ffill')
+    return dfe
 
-temps2 = np.arange(0, 6)  # 0~5℃
-humidity_increase = 7 * temps2
-figH2, axH2 = plt.subplots(figsize=(7,4))
-axH2.plot(temps2, humidity_increase, lw=3, marker="o")
-axH2.fill_between(temps2, humidity_increase, alpha=0.2)
-axH2.set_xlabel("기온 상승 (℃)")
-axH2.set_ylabel("대기 수증기량 증가율 (%)")
-axH2.set_title("기온 상승에 따른 대기 수증기량 증가")
-for t, v in {1:7,2:14,3:21,4:28,5:35}.items():
-    axH2.scatter(t, v, zorder=5)
-    axH2.annotate(f"+{v:.0f}%", (t, v), textcoords="offset points", xytext=(0,10), ha="center", weight="bold")
-st.pyplot(figH2, clear_figure=True)
+climate_df = preprocess_public_climate(gistemp_df)
+employment_df = preprocess_public_employment(wb_df)
 
-st.subheader("3) 고등학생에게 미치는 영향 (예시)")
-st.markdown("**기온 상승 → 학업 성취도 감소** (NBER 연구 요지 인용)")
+# --- 탭: 공개 데이터 대시보드 ---
+tab1, tab2 = st.tabs(["공식 공개 데이터 대시보드", "사용자 입력(리포트 기반) 대시보드"])
 
-temps = np.arange(0, 6)
-impact = 100 - (1.8 * temps)  # 1℃ 당 -1.8%
-figC, axC = plt.subplots(figsize=(7,4))
-axC.bar(temps, impact, alpha=0.7, label="구간별 학업 성취도")
-axC.plot(temps, impact, marker="o", lw=2.5, label="추세선 (1℃ 당 -1.8%)")
-axC.set_xlabel("기온 상승 (℃)")
-axC.set_ylabel("학업 성취도 (%)")
-axC.set_title("기온 상승이 학업 성취도에 미치는 영향")
-axC.set_ylim(80, 102)
-for t, v in zip(temps, impact):
-    axC.text(t, v+0.5, f"{v:.1f}%", ha="center", va="bottom", fontsize=9)
-axC.legend()
-st.pyplot(figC, clear_figure=True)
+with tab1:
+    st.header("공식 공개 데이터 대시보드")
+    st.markdown("**데이터 출처**: NASA GISTEMP (기후 이상치), World Bank (산업별 고용 비율).")
+    col1, col2 = st.columns([2,1])
+    with col1:
+        st.subheader("지구 평균 온도 이상치 (시간 흐름)")
+        # line chart via plotly
+        fig = px.line(climate_df, x='date', y='value', title='지구 평균 온도 이상치 (월별)', labels={'date':'연도','value':'이상치 (℃)'}, hover_data={'date':True,'value':True})
+        fig.update_layout(legend_title_text=None)
+        st.plotly_chart(fig, use_container_width=True)
+        # CSV download
+        csv = climate_df.to_csv(index=False).encode('utf-8')
+        st.download_button("기후 전처리 데이터 다운로드 (CSV)", csv, file_name="climate_preprocessed.csv", mime="text/csv")
+    with col2:
+        st.subheader("산업별 고용 비율 개요")
+        # summarize latest year per country/group
+        # employment_df expected to have group=country; show top countries latest year
+        try:
+            latest = employment_df[employment_df['date']==employment_df['date'].max()]
+            top = latest.sort_values('value', ascending=False).head(10)
+            st.table(top[['group','value']].rename(columns={'group':'국가/그룹','value':'산업 고용 비율(%)'}).reset_index(drop=True))
+        except Exception:
+            st.write("고용 데이터가 충분하지 않아 요약을 표시할 수 없습니다.")
+        csv2 = employment_df.to_csv(index=False).encode('utf-8')
+        st.download_button("고용 전처리 데이터 다운로드 (CSV)", csv2, file_name="employment_preprocessed.csv", mime="text/csv")
 
-st.markdown("**신체·정신 건강** (예시 수치)")
-years = ["2022년", "2023년", "2024년"]
-patients = [1564, 2818, 3704]
-deaths = [9, 32, 34]
-figM, axM = plt.subplots(figsize=(8, 3.6))
-combo_bar_line(axM, years, patients, deaths)
-axM.set_title("온열질환 환자·사망 추이")
-st.pyplot(figM, clear_figure=True)
+    st.markdown("---")
+    st.subheader("기후(온도 이상치) vs 산업 고용(연도별 비교)")
+    # For comparison, aggregate employment by year global median or specific groups
+    # We'll create a synthetic aggregated employment timeseries if original wb df is country-level
+    try:
+        emp_agg = employment_df.groupby('date')['value'].median().reset_index().rename(columns={'value':'industry_employment_median'})
+        merged = pd.merge(climate_df.groupby(climate_df['date'].dt.to_period('Y')).mean().reset_index(), emp_agg, left_on='date', right_on='date', how='inner')
+        # fallback if merge empty
+        if merged.empty:
+            # aggregate climate annually
+            c_ann = climate_df.copy()
+            c_ann['year'] = c_ann['date'].dt.year
+            c_ann_agg = c_ann.groupby('year')['value'].mean().reset_index()
+            e_ann = employment_df.copy()
+            e_ann['year'] = e_ann['date'].dt.year
+            e_ann_agg = e_ann.groupby('year')['value'].median().reset_index()
+            merged = pd.merge(c_ann_agg, e_ann_agg, on='year', how='inner')
+            merged = merged.rename(columns={'value_x':'temp_anomaly','value_y':'industry_employment_median'})
+            fig2 = px.line(merged, x='year', y=['temp_anomaly','industry_employment_median'], labels={'value':'값', 'variable':'지표'}, title='연도별: 기후 이상치 vs 산업 고용(중앙값)')
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            fig2 = px.line(merged, x='date', y=['value','industry_employment_median'], labels={'value':'기후 이상치(평균)','industry_employment_median':'산업 고용(중앙값)'}, title='연도별 비교 (연 단위)')
+            st.plotly_chart(fig2, use_container_width=True)
+    except Exception:
+        st.write("비교 그래프 생성에 실패했습니다. (데이터 포맷 차이)")
 
-cwa, cwb = st.columns(2)
-with cwa:
-    figW1, axW1 = plt.subplots(figsize=(4.2, 4.2))
-    waffle(axW1, 59, title="기후변화를 매우/극도로 우려")
-    st.pyplot(figW1, clear_figure=True)
-with cwb:
-    figW2, axW2 = plt.subplots(figsize=(4.2, 4.2))
-    waffle(axW2, 45, title="일상에 부정적 영향을 받음")
-    st.pyplot(figW2, clear_figure=True)
+    st.markdown("**API 실패 시 안내**: 공개 API 호출이 실패하면 예시(대체) 데이터를 자동 사용하며, 사이드바에 안내 메시지가 표시됩니다.")
 
+with tab2:
+    st.header("사용자 입력 대시보드 (제공된 리포트 텍스트 기반)")
+    st.markdown("입력: 보고서 제목 및 본문(프롬프트로 제공된 텍스트)을 기반으로 자동 생성한 데이터만 사용합니다.")
+    # Build synthetic datasets derived from the provided report content (사용자 입력 데이터만 사용)
+    # 1) 녹색 일자리 vs 화석연료 일자리 변화 (2018-2024)
+    years = list(range(2018, 2025))
+    green_change = [5,8,12,15,18,22,26]  # 누적(예시) 녹색 일자리 증가(단위: 천명 또는 상대지수)
+    fossil_change = [0,-2,-4,-6,-9,-12,-15]  # 감소
+    df_jobs = pd.DataFrame({
+        'date': [datetime.date(y,1,1) for y in years],
+        '녹색_일자리_지표': green_change,
+        '화석기반_일자리_지표': fossil_change
+    })
+    # standardize long format
+    df_jobs_long = df_jobs.melt(id_vars=['date'], var_name='group', value_name='value')
+    df_jobs_long = remove_future_dates(df_jobs_long, 'date')
 
-st.subheader("4) 대응과 미래 세대를 위한 제언")
-st.markdown("""
-- **정책**: 모든 학교에 냉방 및 환기 시스템을 현대화하고, 기후 변화에 따른 청소년 건강 영향을 추적하는 세분화된 통계를 구축해야 합니다.
-- **교육**: 기후변화를 정규 교과목으로 편성하고, 문제 해결 중심의 프로젝트 기반 학습을 확대해야 합니다. 또한, '기후테크'와 같은 새로운 진로 분야에 대한 지도가 필요합니다.
-- **청소년 행동**: 플라스틱 저감 캠페인, 기후행동 소송 참여, 지역사회 환경 문제 해결 등 청소년이 주도하는 기후 행동을 적극적으로 지원하고 확산해야 합니다.
-""")
+    # 2) 전공별(친환경/에너지/IT/기타) 취업률 스냅샷 (예시)
+    majors = ['친환경·에너지 관련 전공', 'IT 관련 전공', '전통 제조 전공', '기타 전공']
+    employ_rates = [0.88, 0.82, 0.65, 0.70]  # 취업률 예시 (0-1)
+    df_major = pd.DataFrame({'group':majors, 'value':[r*100 for r in employ_rates]})
 
-# --- 결론 및 참고 자료 ---
-st.header("IV. 결론")
-st.markdown("""
-대한민국 주변 해수면 온도의 상승은 단순한 해양 문제가 아니라,  
-고등학생들의 건강·학업·생활 전반을 위협하는 **복합 위기**입니다.  
-그러나 교육과 청소년 주도의 기후 행동을 통해 이 위기를 기회로 전환할 수 있습니다.  
-""")
+    # Sidebar 자동 구성: 기간 필터(사용자 데이터에 맞춤), 스무딩(이동평균)
+    st.sidebar.header("사용자 데이터 옵션")
+    years_min = min(years)
+    years_max = max(years)
+    sel_start = st.sidebar.slider("기간 시작 연도", min_value=years_min, max_value=years_max, value=years_min)
+    sel_end = st.sidebar.slider("기간 종료 연도", min_value=years_min, max_value=years_max, value=years_max)
+    smoothing = st.sidebar.checkbox("시계열 스무딩(이동평균)", value=False)
+    window = st.sidebar.slider("스무딩 윈도우(연)", 2, 5, 2) if smoothing else None
 
-st.header("V. 참고 자료")
-st.markdown("""
-- Goodman, J., & Park, R. J. (2018). *Heat and Learning*. NBER Working Paper.
-- Hickman, C., et al. (2021). Climate anxiety in children and young people and their beliefs about government responses to climate change: a global survey. *The Lancet Planetary Health*.
-- 기상청 보도자료 (2024)  
-- 한국해양수산개발원 연구보고서  
-- Planet03 해양열파 연구 (2021)  
-- Newstree, YTN Science 외 기사 및 연구논문  
-""")
+    # Filter df_jobs_long by selected years
+    fj = df_jobs_long.copy()
+    fj['year'] = fj['date'].apply(lambda d: d.year if isinstance(d, datetime.date) else pd.to_datetime(d).year)
+    fj = fj[(fj['year'] >= sel_start) & (fj['year'] <= sel_end)]
 
-st.markdown(
-    """
-    <hr style='border:1px solid #ccc; margin-top:30px; margin-bottom:10px;'/>
-    <div style='text-align: center; padding: 10px; color: gray; font-size: 0.9em;'>
-        미림마이스터고등학교 1학년 4반 1조 · 지속가능한지구사랑해조
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    st.subheader("1) 녹색 전환에 따른 일자리 지표 (리포트 기반)")
+    # plot line per group
+    if smoothing and window:
+        fj = fj.sort_values(['group','date'])
+        fj['value_smooth'] = fj.groupby('group')['value'].transform(lambda x: x.rolling(window=window, min_periods=1).mean())
+        y_col = 'value_smooth'
+        ylabel = '지표 (임의 단위)'
+    else:
+        y_col = 'value'
+        ylabel = '지표 (임의 단위)'
+    fig_jobs = px.line(fj, x='date', y=y_col, color='group', markers=True, labels={'date':'연도','value':'지표','value_smooth':'스무딩 지표','group':'구분'})
+    fig_jobs.update_layout(title='녹색 일자리 증가 vs 화석 연료 기반 일자리 감소 (리포트 기반 예시 데이터)', yaxis_title=ylabel)
+    st.plotly_chart(fig_jobs, use_container_width=True)
+    st.markdown("설명: 이 그래프는 보고서 본문에 기술된 '녹색 일자리 증가'와 '화석연료 기반 일자리 감소'를 예시 수치로 만든 시계열입니다.")
+
+    st.subheader("2) 전공별 취업률(스냅샷)")
+    fig_pie = px.bar(df_major, x='group', y='value', labels={'group':'전공','value':'취업률(%)'}, text='value', title='전공별 취업률 (예시)')
+    st.plotly_chart(fig_pie, use_container_width=True)
+    st.markdown("설명: 보고서에서 언급된 '친환경·에너지 관련 전공자의 취업률이 평균보다 높다'는 문장을 수치화한 예시입니다.")
+
+    # CSV downloads for user-data (preprocessed)
+    st.download_button("사용자 입력(리포트 기반) - 전처리된 일자리 데이터 CSV", df_jobs_long.to_csv(index=False).encode('utf-8'), file_name="user_report_jobs.csv", mime="text/csv")
+    st.download_button("사용자 입력(리포트 기반) - 전공별 취업률 CSV", df_major.to_csv(index=False).encode('utf-8'), file_name="user_report_majors.csv", mime="text/csv")
+
+    st.markdown("---")
+    st.subheader("간단한 제언(리포트 기반 요약)")
+    st.write("""
+    1. 기후 정책·녹색 전환 가속화는 **녹색 일자리 증가**로 이어지므로 관련 전공·기술 습득이 권장됩니다.  
+    2. 전통적 화석연료 산업은 구조조정과 축소가 예상되므로 대응 전략(재교육, 전환 교육)이 필요합니다.  
+    3. IT 분야도 기후 데이터 분석·에너지 효율화 소프트웨어 등 새로운 기회를 제공하므로 융합 역량을 키우세요.
+    """)
+
+# --- 추가: 간단한 도움말 박스 (Kaggle API 안내 포함) ---
+with st.expander("개발자용: Kaggle API 사용 안내 (필요 시)"):
+    st.markdown("""
+    - Kaggle에서 데이터 사용을 원할 경우 `kaggle` 패키지를 설치하고 API 토큰을 설정해야 합니다.
+      1. Kaggle 계정 -> Account -> Create API token -> `kaggle.json` 다운로드  
+      2. Codespaces나 로컬 환경: `~/.kaggle/kaggle.json` 경로에 파일을 저장하고 권한 `chmod 600 ~/.kaggle/kaggle.json` 부여  
+      3. 예: `pip install kaggle` 후 `kaggle datasets download -d <dataset-owner>/<dataset-name>`  
+    - 이 앱은 기본적으로 공식 기관(NASA, World Bank, ILO 등)의 공개 API/CSV를 우선 시도합니다.
+    """)
+
+# End of file
