@@ -220,11 +220,19 @@ def display_public_data_tab(climate_df: pd.DataFrame, co2_df: pd.DataFrame, empl
     st.subheader("🏭 산업별 고용 비율 변화")
     if not employment_df.empty:
         employment_df['year'] = employment_df['date'].dt.year
-        latest_year = int(employment_df['year'].max())
-        
-        st.markdown(f"**{latest_year}년 기준 전 세계 산업 고용 비율 (Choropleth Map)**")
-        fig_map = px.choropleth(employment_df[employment_df['year'] == latest_year], locations="iso_code", color="value", hover_name="group", color_continuous_scale=px.colors.sequential.Plasma, labels={'value': '고용 비율 (%)'})
-        st.plotly_chart(fig_map, use_container_width=True)
+        min_year = int(employment_df['year'].min())
+        max_year = int(employment_df['year'].max())
+
+        # Add a slider to select the year for the map
+        selected_year = st.slider("연도를 선택하여 지도를 변경하세요:", min_year, max_year, max_year)
+
+        st.markdown(f"**{selected_year}년 기준 전 세계 산업 고용 비율 (Choropleth Map)**")
+        map_df = employment_df[employment_df['year'] == selected_year]
+        if not map_df.empty:
+            fig_map = px.choropleth(map_df, locations="iso_code", color="value", hover_name="group", color_continuous_scale=px.colors.sequential.Plasma, labels={'value': '고용 비율 (%)'})
+            st.plotly_chart(fig_map, use_container_width=True)
+        else:
+            st.warning(f"{selected_year}년에는 표시할 고용 데이터가 없습니다.")
 
         st.markdown("**국가별 산업 고용 비율 추이 비교**")
         all_countries = sorted(employment_df['group'].unique())
@@ -369,4 +377,5 @@ if __name__ == "__main__":
             </style>""", unsafe_allow_html=True)
     except Exception: pass
     main()
+
 
