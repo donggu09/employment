@@ -325,9 +325,24 @@ def main():
     if 'data_loaded' not in st.session_state:
         st.sidebar.title("데이터 로드 상태")
         with st.spinner("공식 공개 데이터를 불러오는 중입니다..."):
-            st.session_state.climate_df = preprocess_dataframe(fetch_gistemp_csv() or get_sample_climate_data())
-            st.session_state.co2_df = preprocess_dataframe(fetch_noaa_co2_data() or get_sample_co2_data())
-            st.session_state.employment_df = preprocess_dataframe(fetch_worldbank_employment() or get_sample_employment_data())
+            climate_raw = fetch_gistemp_csv()
+            if climate_raw is None or climate_raw.empty:
+                st.session_state.climate_df = preprocess_dataframe(get_sample_climate_data())
+            else:
+                st.session_state.climate_df = preprocess_dataframe(climate_raw)
+
+            co2_raw = fetch_noaa_co2_data()
+            if co2_raw is None or co2_raw.empty:
+                st.session_state.co2_df = preprocess_dataframe(get_sample_co2_data())
+            else:
+                st.session_state.co2_df = preprocess_dataframe(co2_raw)
+
+            employment_raw = fetch_worldbank_employment()
+            if employment_raw is None or employment_raw.empty:
+                st.session_state.employment_df = preprocess_dataframe(get_sample_employment_data())
+            else:
+                st.session_state.employment_df = preprocess_dataframe(employment_raw)
+
             st.session_state.data_loaded = True
             time.sleep(0.5)
             st.rerun() 
@@ -350,7 +365,7 @@ if __name__ == "__main__":
             st.markdown(f"""
             <style>
             @font-face {{ font-family: 'PretendardCustom'; src: url('{CONFIG["font_path"]}') format('truetype'); }}
-            html, body, [class*="css"] {{ font-family: 'PretendardCustom', Pretendard, sans-serif; }}
+            html, body, [class*="css"] {{ font-family: 'PretendardCustom', Pretard, sans-serif; }}
             </style>""", unsafe_allow_html=True)
     except Exception: pass
     main()
