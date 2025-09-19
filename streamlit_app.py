@@ -1,19 +1,17 @@
 """
-Streamlit Dashboard (Korean) - ENHANCED V2 (Corrected API URL)
-- Topic: 'The Impact of Climate Change on Employment'
-- Features:
-  1) Interactive dashboards with public data (NASA GISTEMP, World Bank, NOAA CO2).
-  2) Interactive simulated dashboard based on a text prompt.
-- Enhancements:
-  - Added NOAA Mauna Loa CO2 data.
-  - Enhanced correlation analysis with metric selection and correlation coefficient.
-  - Made the scenario simulation interactive with sliders.
-  - Improved UI by moving controls from sidebar into tabs.
-  - Added more download buttons.
-  - Removed sklearn dependency.
-- Correction (Sep 2025):
-  - Updated the NOAA CO2 data URL to a new, stable endpoint.
-  - Modified the data parsing function `fetch_noaa_co2_data` to match the new data format.
+Streamlit Dashboard (Korean) - FULLY INTEGRATED VERSION
+
+Topic: 'The Impact of Climate Change on Employment'
+
+Merged Features:
+- Advanced interactive dashboard with real-time public data (NASA, NOAA, World Bank).
+- Interactive 'what-if' scenario simulation for job market forecasting.
+- A detailed, text-based 'Analysis Report' page for qualitative insights.
+- Sidebar navigation to switch between the three main features.
+
+Data Robustness:
+- All API calls have fallbacks to generate sample data upon failure.
+- Data is cached and stored in session_state for efficient performance.
 """
 
 import os
@@ -29,12 +27,11 @@ import requests
 import plotly.express as px
 import plotly.graph_objects as go
 
-
 # ==============================================================================
 # 0. CONFIGURATION & INITIAL SETUP
 # ==============================================================================
 st.set_page_config(
-    page_title="기후와 취업: 데이터 대시보드",
+    page_title="기후와 취업: 통합 대시보드",
     page_icon="🌍",
     layout="wide"
 )
@@ -44,13 +41,12 @@ TODAY = datetime.datetime.now().date()
 CONFIG = {
     "nasa_gistemp_url": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "worldbank_api_url": "https://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS",
-    # 아래 URL을 새롭고 안정적인 공식 주소로 변경했습니다.
     "noaa_co2_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt",
     "font_path": "/fonts/Pretendard-Bold.ttf",
 }
 
 # ==============================================================================
-# 1. UTILITY FUNCTIONS
+# 1. UTILITY & DATA LOADING FUNCTIONS
 # ==============================================================================
 def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optional[requests.Response]:
     """Robust GET request with retries and user-agent."""
@@ -91,9 +87,6 @@ def normalize_series(s: pd.Series) -> pd.Series:
     if s.max() == s.min(): return pd.Series(0.5, index=s.index)
     return (s - s.min()) / (s.max() - s.min())
 
-# ==============================================================================
-# 2. DATA LOADING & PROCESSING (with Caching)
-# ==============================================================================
 @st.cache_data(ttl=3600)
 def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
     """Fetch and parse NASA GISTEMP global monthly anomalies."""
@@ -121,23 +114,17 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
 
 @st.cache_data(ttl=3600)
 def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
-    """Fetch and parse NOAA Mauna Loa CO2 data from the new URL."""
+    """Fetch and parse NOAA Mauna Loa CO2 data."""
     resp = retry_get(CONFIG["noaa_co2_url"], max_retries=1)
     if resp is None: return None
     try:
         content = resp.content.decode('utf-8')
         lines = [line for line in content.split('\n') if not line.strip().startswith('#')]
-        
-        # 새 데이터 형식에 맞게 파서(parser)를 수정했습니다.
         df = pd.read_csv(io.StringIO('\n'.join(lines)), delim_whitespace=True, header=None,
-                         names=['year', 'month', 'decimal_date', 'value', 'value_deseasonalized', 
-                                'num_days', 'stdev', 'unc'])
-                                
+                         names=['year', 'month', 'decimal_date', 'value', 'value_deseasonalized', 'num_days', 'stdev', 'unc'])
         df['date'] = pd.to_datetime(df[['year', 'month']].assign(day=1))
         df_final = df[['date', 'value']].copy()
         df_final['group'] = '대기 중 CO₂ 농도 (ppm)'
-        
-        # -99.99와 같은 유효하지 않은 값을 제거합니다.
         return df_final[df_final['value'] > 0].reset_index(drop=True)
     except Exception as e:
         st.sidebar.error(f"NOAA CO2 데이터 파싱 중 오류: {e}")
@@ -185,7 +172,7 @@ def get_sample_employment_data() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 # ==============================================================================
-# 3. UI RENDERING FUNCTIONS
+# 2. UI RENDERING FUNCTIONS
 # ==============================================================================
 def display_public_data_tab(climate_df: pd.DataFrame, co2_df: pd.DataFrame, employment_df: pd.DataFrame):
     """Render the content for the public data dashboard tab."""
@@ -232,10 +219,7 @@ def display_public_data_tab(climate_df: pd.DataFrame, co2_df: pd.DataFrame, empl
         employment_df['year'] = employment_df['date'].dt.year
         min_year = int(employment_df['year'].min())
         max_year = int(employment_df['year'].max())
-
-        # Add a slider to select the year for the map
         selected_year = st.slider("연도를 선택하여 지도를 변경하세요:", min_year, max_year, max_year)
-
         st.markdown(f"**{selected_year}년 기준 전 세계 산업 고용 비율 (Choropleth Map)**")
         map_df = employment_df[employment_df['year'] == selected_year]
         if not map_df.empty:
@@ -258,34 +242,25 @@ def display_public_data_tab(climate_df: pd.DataFrame, co2_df: pd.DataFrame, empl
     # --- Correlation Section ---
     st.subheader("🔄 기후 지표 vs. 산업 고용 상관관계 분석")
     try:
-        # Prepare data
         c_ann = climate_df.copy(); c_ann['year'] = c_ann['date'].dt.year
         c_ann_agg = c_ann.groupby('year')['value'].mean().reset_index().rename(columns={'value':'temp_anomaly'})
-        
         co2_ann = co2_df.copy(); co2_ann['year'] = co2_ann['date'].dt.year
         co2_ann_agg = co2_ann.groupby('year')['value'].mean().reset_index().rename(columns={'value':'co2_ppm'})
-
         e_ann = employment_df.copy(); e_ann['year'] = e_ann['date'].dt.year
         e_ann_agg = e_ann.groupby('year')['value'].median().reset_index().rename(columns={'value':'employment_median'})
-        
         merged = pd.merge(c_ann_agg, e_ann_agg, on='year', how='inner')
         merged = pd.merge(merged, co2_ann_agg, on='year', how='inner')
-        
         corr_col1, corr_col2 = st.columns(2)
         corr_choice = corr_col1.selectbox("고용 데이터와 비교할 기후 지표를 선택하세요:", ('온도 이상치', 'CO₂ 농도'))
         normalize = corr_col2.checkbox("데이터 정규화 (0-1 스케일)", help="단위가 다른 두 데이터를 0~1 사이 값으로 변환하여 추세 비교를 용이하게 합니다.")
-        
         x_var = 'temp_anomaly' if corr_choice == '온도 이상치' else 'co2_ppm'
         y_var = 'employment_median'
-        
         plot_df = merged[['year', x_var, y_var]].copy()
         correlation = plot_df[x_var].corr(plot_df[y_var])
         st.metric(f"{corr_choice} vs. 고용 비율 상관계수", f"{correlation:.3f}", help="Pearson 상관계수. 1에 가까울수록 강한 양의 상관관계, -1에 가까울수록 강한 음의 상관관계를 의미합니다.")
-
         if normalize:
             plot_df[x_var] = normalize_series(plot_df[x_var])
             plot_df[y_var] = normalize_series(plot_df[y_var])
-            
         fig_corr = go.Figure()
         fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[x_var], name=corr_choice, yaxis='y1'))
         fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[y_var], name='산업 고용(전세계 중앙값)', yaxis='y2'))
@@ -304,77 +279,96 @@ def display_user_prompt_tab():
     col1, col2 = st.columns(2)
     green_growth_rate = col1.slider("연간 녹색 일자리 성장률 (%)", 1.0, 20.0, 10.0, 0.5) / 100
     fossil_decline_rate = col2.slider("연간 화석연료 일자리 감소율 (%)", 1.0, 20.0, 8.0, 0.5) / 100
-    
-    # --- Generate Data Dynamically ---
-    years = list(range(2024, 2041))
-    green_jobs = [500] # Start with 500만
-    fossil_jobs = [1000] # Start with 1000만
+    years = list(range(2025, 2042))
+    green_jobs = [500]
+    fossil_jobs = [1000]
     for _ in range(1, len(years)):
         green_jobs.append(green_jobs[-1] * (1 + green_growth_rate))
         fossil_jobs.append(fossil_jobs[-1] * (1 - fossil_decline_rate))
-
     user_jobs_df = pd.DataFrame({
         'date': pd.to_datetime([datetime.date(y, 1, 1) for y in years] * 2),
         'group': ['녹색 일자리(만 개)'] * len(years) + ['화석연료 일자리(만 개)'] * len(years),
         'value': green_jobs + fossil_jobs
     })
-
     st.subheader(f"💼 {years[0]}년 ~ {years[-1]}년 일자리 변화 시뮬레이션")
     fig = px.line(user_jobs_df, x='date', y='value', color='group', labels={'date':'연도', 'value':'총 일자리 수(만 개)', 'group':'구분'})
     st.plotly_chart(fig, use_container_width=True)
-    
-    # --- Summary Metrics ---
     st.markdown(f"**{years[-1]}년 예측 결과**")
     m1, m2, m3 = st.columns(3)
     final_green = user_jobs_df[user_jobs_df['group'] == '녹색 일자리(만 개)']['value'].iloc[-1]
     final_fossil = user_jobs_df[user_jobs_df['group'] == '화석연료 일자리(만 개)']['value'].iloc[-1]
     m1.metric("녹색 일자리", f"{final_green:,.0f} 만 개")
     m2.metric("화석연료 일자리", f"{final_fossil:,.0f} 만 개")
-    m3.metric("총 일자리 변화", f"{((final_green + final_fossil) - (green_jobs[0] + fossil_jobs[0])):,.0f} 만 개", delta_color="off")
+    m3.metric("총 일자리 변화", f"{((final_green + final_fossil) - (500 + 1000)):,.0f} 만 개", delta_color="off")
     st.download_button("시뮬레이션 결과 다운로드", user_jobs_df.to_csv(index=False, encoding='utf-8-sig'), "scenario_data.csv", "text/csv", key="dl_scenario")
 
+def display_report_page():
+    """Render the content for the static analysis report page."""
+    st.title("📝 기후변화와 취업 보고서")
+    st.header("서론")
+    st.write("""
+    최근 기후위기는 단순한 환경 문제가 아니라 **청년의 미래 직업 선택**에도 큰 영향을 주고 있습니다.  
+    본 보고서는 기후변화가 산업 구조와 고용률에 어떤 변화를 일으키는지, 특히 청년 취업률에 미치는 영향을 분석하기 위해 작성되었습니다.
+    """)
+    st.header("본론")
+    st.subheader("1. 기후 변화와 산업 구조 변화")
+    st.write("""
+    - NASA 기온 데이터에 따르면 지구 평균 기온은 꾸준히 상승하고 있습니다.  
+    - 이로 인해 **녹색산업 일자리**는 매년 증가하고 있으며, 반대로 **화석연료 관련 일자리**는 감소세를 보이고 있습니다.  
+    """)
+    st.subheader("2. 청년 취업률 변화")
+    st.write("""
+    - 한국직업능력연구원(YPEC) 통계에 따르면 대졸 청년 취업률은 2017년 약 67%에서 2022년 68% 수준으로 등락을 반복하고 있습니다.  
+    - 그러나 **친환경 전공 취업률은 꾸준히 상승**하는 반면, **비친환경 전공 취업률은 하락세**를 보입니다.  
+    """)
+    st.subheader("3. 정책과 미래 직업 방향")
+    st.write("""
+    - 고용노동부와 정부는 탄소중립 정책을 통해 녹색산업에 대한 투자를 확대하고 있습니다.  
+    - 앞으로의 청년 취업 기회는 **신재생에너지, 친환경 교통, 기후기술 개발 분야**에서 크게 늘어날 것으로 전망됩니다.  
+    """)
+    st.header("결론")
+    st.write("""
+    기후위기는 위기이자 기회입니다.  
+    산업 구조 전환 속에서 청년들이 **친환경·녹색 분야 전공 및 직업 역량**을 갖춘다면 안정적이고 유망한 일자리를 확보할 수 있습니다.  
+    따라서 기후를 고려한 진로 선택은 단순한 환경 보호 차원이 아니라 **미래 취업 전략**이기도 합니다.
+    """)
+    st.markdown("---")
+    st.caption("출처: NASA GISTEMP, 고용노동부 보도자료, 한국직업능력연구원(YPEC), 기후변화행동연구소, 기후환경포털 등")
+
 # ==============================================================================
-# 4. MAIN APPLICATION LOGIC
+# 3. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
     """Main function to run the Streamlit app."""
-    st.title("기후 변화와 취업 동향 대시보드")
+    st.title("기후 변화와 취업 동향 통합 대시보드")
 
+    # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
         st.sidebar.title("데이터 로드 상태")
         with st.spinner("공식 공개 데이터를 불러오는 중입니다..."):
             climate_raw = fetch_gistemp_csv()
-            if climate_raw is None or climate_raw.empty:
-                st.session_state.climate_df = preprocess_dataframe(get_sample_climate_data())
-            else:
-                st.session_state.climate_df = preprocess_dataframe(climate_raw)
-
+            st.session_state.climate_df = preprocess_dataframe(climate_raw if climate_raw is not None else get_sample_climate_data())
             co2_raw = fetch_noaa_co2_data()
-            if co2_raw is None or co2_raw.empty:
-                st.session_state.co2_df = preprocess_dataframe(get_sample_co2_data())
-            else:
-                st.session_state.co2_df = preprocess_dataframe(co2_raw)
-
+            st.session_state.co2_df = preprocess_dataframe(co2_raw if co2_raw is not None else get_sample_co2_data())
             employment_raw = fetch_worldbank_employment()
-            if employment_raw is None or employment_raw.empty:
-                st.session_state.employment_df = preprocess_dataframe(get_sample_employment_data())
-            else:
-                st.session_state.employment_df = preprocess_dataframe(employment_raw)
-
+            st.session_state.employment_df = preprocess_dataframe(employment_raw if employment_raw is not None else get_sample_employment_data())
             st.session_state.data_loaded = True
             time.sleep(0.5)
-            st.rerun() 
-    
-    tab1, tab2 = st.tabs(["🌏 공개 데이터 대시보드", "📄 가상 시나리오 분석"])
-    with tab1:
-        display_public_data_tab(st.session_state.climate_df, st.session_state.co2_df, st.session_state.employment_df)
-    with tab2:
-        display_user_prompt_tab()
+            st.rerun()
 
-    with st.expander("개발자 및 실행 환경 참고사항"):
+    # --- Page Navigation ---
+    page = st.sidebar.radio("📑 페이지 선택", ["🌏 공개 데이터 대시보드", "📄 가상 시나리오 분석", "📝 분석 보고서"])
+
+    if page == "🌏 공개 데이터 대시보드":
+        display_public_data_tab(st.session_state.climate_df, st.session_state.co2_df, st.session_state.employment_df)
+    elif page == "📄 가상 시나리오 분석":
+        display_user_prompt_tab()
+    elif page == "📝 분석 보고서":
+        display_report_page()
+
+    with st.sidebar.expander("개발자 및 실행 환경 참고사항"):
         st.markdown("""
         - 이 앱은 NASA/NOAA/WorldBank 공개 API를 우선적으로 호출하며, 네트워크 실패 시 내장된 예시 데이터로 자동 전환됩니다.
-        - **Kaggle 데이터 연동 방법**: `pip install kaggle` 후 Kaggle 계정 설정에서 API 토큰(`kaggle.json`)을 다운받아 `~/.kaggle/` 폴더에 저장하세요.
         """)
 
 if __name__ == "__main__":
@@ -387,3 +381,4 @@ if __name__ == "__main__":
             </style>""", unsafe_allow_html=True)
     except Exception: pass
     main()
+
