@@ -1,5 +1,5 @@
 """
-Streamlit Dashboard (Korean) - ENHANCED V2
+Streamlit Dashboard (Korean) - ENHANCED V2 (Corrected API URL)
 - Topic: 'The Impact of Climate Change on Employment'
 - Features:
   1) Interactive dashboards with public data (NASA GISTEMP, World Bank, NOAA CO2).
@@ -11,6 +11,9 @@ Streamlit Dashboard (Korean) - ENHANCED V2
   - Improved UI by moving controls from sidebar into tabs.
   - Added more download buttons.
   - Removed sklearn dependency.
+- Correction (Sep 2025):
+  - Updated the NOAA CO2 data URL to a new, stable endpoint.
+  - Modified the data parsing function `fetch_noaa_co2_data` to match the new data format.
 """
 
 import os
@@ -41,7 +44,8 @@ TODAY = datetime.datetime.now().date()
 CONFIG = {
     "nasa_gistemp_url": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "worldbank_api_url": "https://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS",
-    "noaa_co2_url": "https://gml.noaa.gov/aftp/data/trace_gases/co2/in-situ/surface/mlo/co2_mlo_surface-insitu_1_ccgg_MonthlyData.txt",
+    # 아래 URL을 새롭고 안정적인 공식 주소로 변경했습니다.
+    "noaa_co2_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt",
     "font_path": "/fonts/Pretendard-Bold.ttf",
 }
 
@@ -117,18 +121,24 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
 
 @st.cache_data(ttl=3600)
 def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
-    """Fetch and parse NOAA Mauna Loa CO2 data."""
+    """Fetch and parse NOAA Mauna Loa CO2 data from the new URL."""
     resp = retry_get(CONFIG["noaa_co2_url"], max_retries=1)
     if resp is None: return None
     try:
         content = resp.content.decode('utf-8')
         lines = [line for line in content.split('\n') if not line.strip().startswith('#')]
+        
+        # 새 데이터 형식에 맞게 파서(parser)를 수정했습니다.
         df = pd.read_csv(io.StringIO('\n'.join(lines)), delim_whitespace=True, header=None,
-                         names=['site', 'year', 'month', 'day', 'hour', 'minute', 'second', 'value_unc', 'value_std_dev', 'value_n', 'latitude', 'longitude', 'altitude', 'elevation', 'intake_height', 'qcflag'])
-        df['date'] = pd.to_datetime(df[['year', 'month', 'day']])
-        df_final = df[['date', 'value_unc']].rename(columns={'value_unc': 'value'})
+                         names=['year', 'month', 'decimal_date', 'value', 'value_deseasonalized', 
+                                'num_days', 'stdev', 'unc'])
+                                
+        df['date'] = pd.to_datetime(df[['year', 'month']].assign(day=1))
+        df_final = df[['date', 'value']].copy()
         df_final['group'] = '대기 중 CO₂ 농도 (ppm)'
-        return df_final[df_final['value'] > 0] # Remove placeholder values
+        
+        # -99.99와 같은 유효하지 않은 값을 제거합니다.
+        return df_final[df_final['value'] > 0].reset_index(drop=True)
     except Exception as e:
         st.sidebar.error(f"NOAA CO2 데이터 파싱 중 오류: {e}")
         return None
@@ -377,5 +387,3 @@ if __name__ == "__main__":
             </style>""", unsafe_allow_html=True)
     except Exception: pass
     main()
-
-
