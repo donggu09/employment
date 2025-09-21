@@ -25,7 +25,6 @@ import numpy as np
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
-from streamlit_lottie import st_lottie
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -43,7 +42,8 @@ TODAY = datetime.datetime.now().date()
 CONFIG = {
     "nasa_gistemp_url": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "worldbank_api_url": "https://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS",
-    "noaa_co2_url": "https://gml.noaa.gov/aftp/data/trace_gases/co2/in-situ/surface/mlo/co2_mlo_surface-insitu_1_ccgg_MonthlyData.txt",
+    # [FIXED] Correct, stable URL for NOAA CO2 data
+    "noaa_co2_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt",
 }
 
 # --- Global Session with Retry Strategy ---
@@ -73,27 +73,15 @@ def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optiona
         resp.raise_for_status()
         return resp
     except requests.exceptions.RequestException as e:
-        error_message = f"**API (`{url.split('//')[1].split('/')[0]}`) 요청 실패:** `{e}`"
+        # Reformat the error message to be more user-friendly
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 요청 실패:** 404 Client Error: Not Found for url: `{url}`" if '404' in str(e) else f"**API (`{url.split('//')[1].split('/')[0]}`) 요청 실패:** `{e}`"
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
         if error_message not in st.session_state.api_errors:
             st.session_state.api_errors.append(error_message)
         return None
 
-@st.cache_data
-def load_lottieurl(url: str):
-    """
-    Loads Lottie JSON using the global session.
-    """
-    headers = {'User-Agent': 'Mozilla/5.0 (compatible; StreamlitApp/1.0)'}
-    try:
-        r = _SESSION.get(url, timeout=10, headers=headers, allow_redirects=True, verify=True)
-        if r.status_code == 200:
-            return r.json()
-    except (requests.exceptions.RequestException, ValueError):
-        return None
-    return None
-
+# [REMOVED] Unused load_lottieurl function
 
 @st.cache_data(ttl=3600)
 def preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -139,15 +127,23 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
         return df_final.dropna(subset=['date', 'value'])
     except Exception: return None
 
+# [FIXED] Revamped function to parse the new data format correctly
 @st.cache_data(ttl=3600)
 def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
     resp = retry_get(CONFIG["noaa_co2_url"])
     if resp is None: return None
     try:
-        lines = [line for line in resp.content.decode('utf-8').split('\n') if not line.strip().startswith('#')]
-        df = pd.read_csv(io.StringIO('\n'.join(lines)), delim_whitespace=True, header=None, names=['site', 'year', 'month', 'day', 'hour', 'minute', 'second', 'value_unc', 'value_std_dev', 'value_n', 'latitude', 'longitude', 'altitude', 'elevation', 'intake_height', 'qcflag'])
-        df['date'] = pd.to_datetime(df[['year', 'month', 'day']])
-        df_final = df[['date', 'value_unc']].rename(columns={'value_unc': 'value'})
+        # The new file has comments starting with '#' and is whitespace-delimited
+        df = pd.read_csv(
+            io.StringIO(resp.content.decode('utf-8')),
+            comment='#',
+            delim_whitespace=True,
+            header=None,
+            names=['year', 'month', 'decimal_date', 'average', 'interpolated', 'trend', 'days']
+        )
+        # Create a 'date' column for the first day of the month
+        df['date'] = pd.to_datetime(df['year'].astype(str) + '-' + df['month'].astype(str) + '-01')
+        df_final = df[['date', 'interpolated']].rename(columns={'interpolated': 'value'})
         df_final['group'] = '대기 중 CO₂ 농도 (ppm)'
         return df_final[df_final['value'] > 0]
     except Exception: return None
@@ -409,7 +405,7 @@ def display_career_game_tab():
                                  ("컴퓨터공학 (AI 트랙)", "기계공학", "경제학"), key="major")
             with col2:
                 club = st.radio("핵심 동아리 활동은 무엇인가요?",
-                                ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
+                                 ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
             with col3:
                 project = st.radio("졸업 프로젝트 주제는 무엇인가요?",
                                    ("탄소 배출량 예측 AI 모델", "고효율 내연기관 설계", "ESG 경영사례 분석"), key="project")
@@ -525,7 +521,8 @@ def display_survey_tab():
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    st.title("기후 변화와 미래 커리어 대시보드 V9.0 (최종 안정화) 🌍💼")
+    # [FIXED] Updated title to match version V10.0
+    st.title("기후 변화와 미래 커리어 대시보드 V10.0 (최종 안정화) 🌍💼")
 
     # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
@@ -586,4 +583,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
