@@ -1,17 +1,17 @@
 """
-Streamlit Dashboard (Korean) - V11.0 (Dark Mode UI & Feature Enhancement)
-This version revamps the entire UI to match the user-provided dark mode screenshot, including new features like a moving average trendline and polished chart designs. This is the definitive stable version.
+Streamlit Dashboard (Korean) - V10.0 (Correlation Fix with Expanded Samples)
+This version resolves the correlation analysis error by expanding the embedded sample data to ensure a sufficient multi-year overlap for analysis, even when live APIs fail. This is the definitive stable version.
 - Topic: 'The Impact of Climate Change on Employment'
 - Core Features:
   1) Live public data dashboards via API calls with guaranteed fallbacks.
   2) In-depth analysis tab with correlation and job scenario simulator.
   3) A "Job Impact" section comparing green vs. at-risk jobs.
 - UI/UX Enhancements:
-  - **V11.0 Definitive Fix**:
-    - **Dark Mode UI**: All Plotly charts now use the 'plotly_dark' template to match the requested aesthetic.
-    - **Moving Average Trendline**: Added a toggleable 5-year moving average trendline to the global temperature chart.
-    - **UI Polish**: Replicated the layout, icons, subtitles, and download buttons from the user's screenshot for a professional look.
-    - **Expanded Sample Data**: Retained expanded sample data to ensure all features work offline.
+  - **V10.0 Definitive Fix**:
+    - **Expanded Sample Data**: Updated all embedded sample datasets to span multiple overlapping years (2020-2023), fixing the "data period too short" error in the correlation analysis tab.
+    - **Unified Data Pipeline**: Ensures both live and sample data undergo the same validation.
+    - **Robust Networking**: Retained the professional-grade requests.Session with a Retry adapter.
+    - **Data Status Panel**: A clear UI panel informs the user about the source of the data.
 """
 
 import io
@@ -241,81 +241,60 @@ def display_api_errors():
         st.markdown("---")
 
 
-# --------------------------- TAB 1: Global Trends (REVAMPED) -----------------------------
+# --------------------------- TAB 1: Global Trends -----------------------------
 def display_global_trends_tab(climate_df, co2_df, employment_df):
     st.header("📈 글로벌 기후 및 고용 동향")
+    st.markdown("NASA, NOAA, World Bank의 최신 데이터를 시각화합니다.")
     
-    with st.container(border=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("🌡️ 지구 평균 온도 이상치")
-            show_trend = st.checkbox("5년 이동평균 추세선", value=True, key="trend_checkbox")
-            
-            if not climate_df.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=climate_df['date'], y=climate_df['value'], 
-                    mode='lines', name='월별 이상치',
-                    line=dict(width=1.5, color='lightgray')
-                ))
-                
-                if show_trend:
-                    climate_df['trend'] = climate_df['value'].rolling(window=60, min_periods=12).mean()
-                    fig.add_trace(go.Scatter(
-                        x=climate_df['date'], y=climate_df['trend'],
-                        mode='lines', name='5년 이동평균',
-                        line=dict(width=3, color='#1f77b4')
-                    ))
+    col1, col2, col3 = st.columns(3)
+    if not climate_df.empty and not co2_df.empty and not employment_df.empty:
+        try:
+            # Ensure date column is datetime before formatting
+            climate_df['date'] = pd.to_datetime(climate_df['date'])
+            co2_df['date'] = pd.to_datetime(co2_df['date'])
 
-                fig.update_layout(template="plotly_dark", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
-                st.plotly_chart(fig, use_container_width=True)
-                
-                csv = climate_df.to_csv(index=False).encode('utf-8')
-                st.download_button("온도 데이터 다운로드", data=csv, file_name="climate_data.csv", mime="text/csv")
-            else:
-                st.warning("온도 데이터를 불러올 수 없습니다.")
+            latest_climate = climate_df.sort_values('date', ascending=False).iloc[0]
+            latest_co2 = co2_df.sort_values('date', ascending=False).iloc[0]
+            col1.metric(f"최신 온도 이상치 ({latest_climate['date']:%Y-%m})", f"{latest_climate['value']:.2f} ℃")
+            col2.metric(f"최신 CO₂ 농도 ({latest_co2['date']:%Y-%m})", f"{latest_co2['value']:.2f} ppm")
+            col3.metric("고용 데이터 국가 수", f"{employment_df['group'].nunique()} 개")
+        except (IndexError, ValueError, TypeError): 
+            st.info("핵심 지표를 계산할 데이터가 부족합니다.")
+    else:
+        st.info("데이터를 불러오는 중이거나 API 호출에 실패하여 표시할 데이터가 없습니다.")
+    st.markdown("---")
 
-        with c2:
-            st.subheader("💨 대기 중 CO₂ 농도")
-            st.caption("하와이 마우나로아 관측소 기준")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("🌡️ 지구 평균 온도 이상치")
+        if not climate_df.empty:
+            fig = px.line(climate_df, x='date', y='value', labels={'date': '', 'value': '온도 이상치 (°C)'}, color_discrete_sequence=['#d62728'])
+            st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.subheader("💨 대기 중 CO₂ 농도 (마우나로아)")
+        if not co2_df.empty:
+            fig = px.line(co2_df, x='date', y='value', labels={'date': '', 'value': 'CO₂ (ppm)'}, color_discrete_sequence=['#1f77b4'])
+            st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
 
-            if not co2_df.empty:
-                fig = px.line(co2_df, x='date', y='value', labels={'date': '날짜', 'value': 'CO₂ (ppm)'})
-                fig.update_traces(line=dict(color='cyan', width=2))
-                fig.update_layout(template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
-                
-                csv = co2_df.to_csv(index=False).encode('utf-8')
-                st.download_button("CO₂ 데이터 다운로드", data=csv, file_name="co2_data.csv", mime="text/csv")
-            else:
-                st.warning("CO₂ 데이터를 불러올 수 없습니다.")
+    st.subheader("🏭 산업별 고용 비율 변화")
+    if not employment_df.empty:
+        employment_df['year'] = pd.to_datetime(employment_df['date']).dt.year
+        min_year, max_year = int(employment_df['year'].min()), int(employment_df['year'].max())
+        selected_year = st.slider("연도 선택:", min_year, max_year, max_year, key="map_year_slider")
+        
+        map_df = employment_df[employment_df['year'] == selected_year]
+        if not map_df.empty:
+            fig_map = px.choropleth(map_df, locations="iso_code", color="value", hover_name="group", color_continuous_scale=px.colors.sequential.Plasma, labels={'value': '고용 비율 (%)'}, title=f"{selected_year}년 전 세계 산업 고용 비율")
+            st.plotly_chart(fig_map, use_container_width=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    with st.container(border=True):
-        st.subheader("🏭 산업별 고용 비율 변화")
-        if not employment_df.empty:
-            employment_df['year'] = pd.to_datetime(employment_df['date']).dt.year
-            min_year, max_year = int(employment_df['year'].min()), int(employment_df['year'].max())
-            
-            selected_year = st.slider("연도 선택:", min_year, max_year, max_year, key="map_year_slider")
-            
-            map_df = employment_df[employment_df['year'] == selected_year]
-            if not map_df.empty:
-                fig_map = px.choropleth(map_df, locations="iso_code", color="value", hover_name="group", color_continuous_scale=px.colors.sequential.Plasma, labels={'value': '고용 비율 (%)'}, title=f"{selected_year}년 전 세계 산업 고용 비율")
-                fig_map.update_layout(template="plotly_dark")
-                st.plotly_chart(fig_map, use_container_width=True)
-
-            all_countries = sorted(employment_df['group'].unique())
-            default_countries = [c for c in ['World', 'Korea, Rep.', 'World (예시)', 'Korea (예시)'] if c in all_countries] or all_countries[:2]
-            selected_countries = st.multiselect("국가별 추이 비교:", all_countries, default=default_countries)
-            if selected_countries:
-                comp_df = employment_df[employment_df['group'].isin(selected_countries)]
-                fig_comp = px.line(comp_df, x='year', y='value', color='group', labels={'year':'연도', 'value':'산업 고용 비율(%)', 'group':'국가'})
-                fig_comp.update_layout(template="plotly_dark")
-                st.plotly_chart(fig_comp, use_container_width=True)
-        else:
-            st.warning("고용 데이터를 불러올 수 없습니다.")
+        all_countries = sorted(employment_df['group'].unique())
+        default_countries = [c for c in ['World', 'Korea, Rep.', 'World (예시)', 'Korea (예시)'] if c in all_countries] or all_countries[:2]
+        selected_countries = st.multiselect("국가별 추이 비교:", all_countries, default=default_countries)
+        if selected_countries:
+            comp_df = employment_df[employment_df['group'].isin(selected_countries)]
+            fig_comp = px.line(comp_df, x='year', y='value', color='group', labels={'year':'연도', 'value':'산업 고용 비율(%)', 'group':'국가'})
+            st.plotly_chart(fig_comp, use_container_width=True)
 
 # ------------------------- TAB 2: In-Depth Analysis ---------------------------
 def display_analysis_tab(climate_df, co2_df, employment_df):
@@ -359,14 +338,15 @@ def display_analysis_tab(climate_df, co2_df, employment_df):
                 plot_df[x_var] = (plot_df[x_var] - plot_df[x_var].min()) / (plot_df[x_var].max() - plot_df[x_var].min())
                 plot_df[y_var] = (plot_df[y_var] - plot_df[y_var].min()) / (plot_df[y_var].max() - plot_df[y_var].min())
             
+            # Create a figure with a secondary y-axis
             fig_corr = go.Figure()
             fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[x_var], name=corr_choice,
                                           line=dict(color='#d62728')))
             fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[y_var], name='산업 고용(전세계 중앙값)', yaxis='y2',
                                           line=dict(color='#1f77b4')))
 
+            # Update layout for the secondary y-axis
             fig_corr.update_layout(
-                template="plotly_dark",
                 xaxis_title="연도",
                 yaxis_title=f"{corr_choice} ({'℃' if x_var == 'temp_anomaly' else 'ppm'})" if not normalize else "정규화된 값",
                 yaxis2=dict(
@@ -381,7 +361,7 @@ def display_analysis_tab(climate_df, co2_df, employment_df):
         except Exception as e:
             st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("---")
     
     with st.container(border=True):
         st.subheader("📄 가상 시나리오 분석")
@@ -397,7 +377,6 @@ def display_analysis_tab(climate_df, co2_df, employment_df):
 
         user_jobs_df = pd.DataFrame({ 'date': pd.to_datetime([datetime.date(y, 1, 1) for y in years] * 2), 'group': ['녹색 일자리(만 개)'] * len(years) + ['화석연료 일자리(만 개)'] * len(years), 'value': green_jobs + fossil_jobs })
         fig = px.line(user_jobs_df, x='date', y='value', color='group', color_discrete_map={'녹색 일자리(만 개)': '#2ca02c', '화석연료 일자리(만 개)': '#7f7f7f'})
-        fig.update_layout(template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
 
 # --------------------------- TAB 3: Job Impact --------------------------------
@@ -409,12 +388,10 @@ def display_job_impact_tab():
     with col1:
         st.subheader("💡 성장 가능성이 높은 녹색 직무")
         fig_op = px.bar(df_op, x='성장 가능성 (점수)', y='직무', orientation='h', color='성장 가능성 (점수)', color_continuous_scale=px.colors.sequential.Greens)
-        fig_op.update_layout(template="plotly_dark")
         st.plotly_chart(fig_op, use_container_width=True)
     with col2:
         st.subheader("⚠️ 전환이 필요한 기존 직무")
         fig_risk = px.bar(df_r, x='위험도 (점수)', y='직무', orientation='h', color='위험도 (점수)', color_continuous_scale=px.colors.sequential.Reds)
-        fig_risk.update_layout(template="plotly_dark")
         st.plotly_chart(fig_risk, use_container_width=True)
 
 
@@ -501,7 +478,7 @@ def display_career_game_tab():
             with res2:
                 df_skills = pd.DataFrame(dict(r=list(skills.values()), theta=list(skills.keys())))
                 fig = px.line_polar(df_skills, r='r', theta='theta', line_close=True, range_r=[0,5])
-                fig.update_layout(template="plotly_dark", polar=dict(radialaxis=dict(visible=True, range=[0, 5])))
+                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 5])))
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption("나의 역량 레이더 차트")
 
@@ -542,14 +519,13 @@ def display_survey_tab():
                     mode = "gauge+number", value = q2,
                     title = {'text': "나의 역량 개발 의지 점수"},
                     gauge = {'axis': {'range': [None, 10]}, 'bar': {'color': "#2ca02c"}}))
-                fig.update_layout(template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
 
 # ==============================================================================
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    st.title("기후 변화와 미래 커리어 대시보드 V10.0 (최종 안정화) 🌍💼")
+    st.title("기후 변화와 미래 커리어 대시보드 V9.0 (최종 안정화) 🌍💼")
 
     # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
@@ -610,3 +586,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
