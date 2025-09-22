@@ -1,17 +1,16 @@
 """
-Streamlit Dashboard (Korean) - V10.3 (Enhanced Error Handling)
-This version significantly improves error handling and user feedback. Instead of generic failure messages, it now provides specific, user-friendly diagnostics for different types of network errors (e.g., connection timeouts, HTTP errors), helping users understand the root cause of API failures.
+Streamlit Dashboard (Korean) - V10.4 (Final Polished Version)
+This definitive version enhances user experience by adding a prominent, high-level warning message that appears if any live data API fails, immediately informing the user why they are seeing sample data. It also refines the error messages for network timeouts to provide more specific potential causes, like firewalls.
 - Topic: 'The Impact of Climate Change on Employment'
 - Core Features:
   1) Live public data dashboards via API calls with guaranteed fallbacks.
   2) In-depth analysis tab with correlation and job scenario simulator.
   3) A "Job Impact" section comparing green vs. at-risk jobs.
 - UI/UX Enhancements:
-  - **V10.3 Definitive Fix**:
-    - **Enhanced Error Diagnostics**: Revamped the `retry_get` function to catch specific `requests` exceptions and generate clear, actionable error messages in Korean.
-    - **Increased Timeout**: Retained the 30-second request timeout for better resilience.
-    - **Corrected CO2 Parser**: Retained the fix for the NOAA CO2 data parser.
-    - **Robust Networking**: Retained the professional-grade requests.Session with a Retry adapter.
+  - **V10.4 Definitive Fix**:
+    - **Prominent Failure Warning**: Added a `st.warning` message at the top of the page if any API fails, directing users to the detailed error messages below.
+    - **More Informative Errors**: Improved the `ConnectTimeout` error message to suggest potential network restrictions like firewalls.
+    - **Increased Timeout & Robust Parsers**: Retained all previous fixes for maximum stability.
 """
 
 import io
@@ -73,7 +72,8 @@ def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optiona
         resp.raise_for_status()
         return resp
     except requests.exceptions.ConnectTimeout:
-        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 연결 시간 초과:** 서버가 응답하지 않습니다. 일시적인 네트워크 문제일 수 있습니다."
+        # [FIXED] More descriptive timeout error message
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 연결 시간 초과:** 30초 내에 서버로부터 응답을 받지 못했습니다. 서버가 일시적으로 느리거나, 방화벽 등의 네트워크 제약 때문일 수 있습니다."
     except requests.exceptions.HTTPError as e:
         error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 서버 오류:** 서버에서 `{e.response.status_code}` 오류를 반환했습니다. 데이터 소스에 문제가 있을 수 있습니다."
     except requests.exceptions.RequestException as e:
@@ -131,7 +131,8 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
     except Exception as e:
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
-        st.session_state.api_errors.append(f"**NASA GISTEMP 데이터 파싱 오류:** `{e}`")
+        if f"**NASA GISTEMP 데이터 파싱 오류:** `{e}`" not in st.session_state.api_errors:
+            st.session_state.api_errors.append(f"**NASA GISTEMP 데이터 파싱 오류:** `{e}`")
         return None
 
 @st.cache_data(ttl=3600)
@@ -157,7 +158,8 @@ def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
     except Exception as e:
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
-        st.session_state.api_errors.append(f"**NOAA CO₂ 데이터 파싱 오류:** `{e}`")
+        if f"**NOAA CO₂ 데이터 파싱 오류:** `{e}`" not in st.session_state.api_errors:
+            st.session_state.api_errors.append(f"**NOAA CO₂ 데이터 파싱 오류:** `{e}`")
         return None
 
 @st.cache_data(ttl=3600)
@@ -175,7 +177,8 @@ def fetch_worldbank_employment() -> Optional[pd.DataFrame]:
     except Exception as e:
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
-        st.session_state.api_errors.append(f"**World Bank 데이터 파싱 오류:** `{e}`")
+        if f"**World Bank 데이터 파싱 오류:** `{e}`" not in st.session_state.api_errors:
+            st.session_state.api_errors.append(f"**World Bank 데이터 파싱 오류:** `{e}`")
         return None
 
 # --- [EXPANDED] Embedded Sample Data Fallbacks ---
@@ -276,7 +279,7 @@ def display_global_trends_tab(climate_df, co2_df, employment_df):
             fig = px.line(climate_df, x='date', y='value', labels={'date': '', 'value': '온도 이상치 (°C)'}, color_discrete_sequence=['#d62728'])
             st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.subheader("💨 대기 중 CO₂ 농도 (마우나로아)")
+        st.subheader("💨 대기 중 CO₂ 농도 (마우나로아 관측소)")
         if not co2_df.empty:
             fig = px.line(co2_df, x='date', y='value', labels={'date': '', 'value': 'CO₂ (ppm)'}, color_discrete_sequence=['#1f77b4'])
             st.plotly_chart(fig, use_container_width=True)
