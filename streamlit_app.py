@@ -1,11 +1,12 @@
 """
-Streamlit Dashboard (Korean) - V23 (Final Clean UI)
-This version addresses the final UI issue by removing the gray background from inactive tabs, ensuring a completely seamless and flat dark-mode interface as per the user's persistent request.
+Streamlit Dashboard (Korean) - V24 (Optimized Loading)
+This version optimizes the initial data loading process by fetching all external APIs concurrently, significantly reducing the startup time of the application.
 
 - Core Topic: 'The Impact of Climate Change on Employment'
 - Key Upgrades:
-  1) **Seamless Tab UI**: Modified the CSS to make the background of inactive tabs match the main app background (`#1E1E1E`). This completely removes the "gray box" effect the user was pointing out.
-  2) **Final Flat Design**: With this change, the dashboard now has a truly unified and flat dark theme, with no extraneous container colors. The active tab remains clearly differentiated by its text color and bottom border.
+  1) **Concurrent API Calls**: Implemented `concurrent.futures.ThreadPoolExecutor` to fetch the three main data sources (NASA, NOAA, World Bank) in parallel instead of sequentially.
+  2) **Reduced Timeout**: The default timeout for individual API requests in the `retry_get` function has been reduced from 30 to 15 seconds to fail faster on unresponsive servers.
+  3) **Improved User Experience**: The initial loading spinner now reflects the parallel fetching process, and the overall time to see the dashboard is much shorter.
 """
 
 import io
@@ -14,6 +15,7 @@ import datetime
 import os
 import json
 from typing import Optional, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 import streamlit as st
 import pandas as pd
@@ -115,11 +117,11 @@ def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optiona
     headers = {'User-Agent': 'Mozilla/5.0 (compatible; StreamlitApp/1.0)'}
     error_message = ""
     try:
-        resp = _SESSION.get(url, params=params, headers=headers, timeout=kwargs.get('timeout', 30), allow_redirects=True, verify=True)
+        resp = _SESSION.get(url, params=params, headers=headers, timeout=kwargs.get('timeout', 15), allow_redirects=True, verify=True)
         resp.raise_for_status()
         return resp
     except requests.exceptions.ConnectTimeout:
-        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 연결 시간 초과:** 30초 내에 서버로부터 응답을 받지 못했습니다. 서버가 일시적으로 느리거나, 네트워크 제약 때문일 수 있습니다."
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 연결 시간 초과:** 15초 내에 서버로부터 응답을 받지 못했습니다. 서버가 일시적으로 느리거나, 네트워크 제약 때문일 수 있습니다."
     except requests.exceptions.HTTPError as e:
         error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 서버 오류:** 서버에서 `{e.response.status_code}` 오류를 반환했습니다."
     except requests.exceptions.RequestException as e:
@@ -729,16 +731,22 @@ def main():
         st.session_state.data_status = {}
         st.session_state.api_errors = []
 
-        with st.spinner("실시간 데이터를 불러오는 중입니다... 잠시만 기다려주세요."):
-            climate_raw = fetch_gistemp_csv()
+        with st.spinner("실시간 데이터를 병렬로 빠르게 불러오는 중입니다..."):
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                future_climate = executor.submit(fetch_gistemp_csv)
+                future_co2 = executor.submit(fetch_noaa_co2_data)
+                future_employment = executor.submit(fetch_worldbank_employment)
+
+                climate_raw = future_climate.result()
+                co2_raw = future_co2.result()
+                wb_employment_raw = future_employment.result()
+            
             st.session_state.data_status['climate'] = 'Live' if climate_raw is not None and not climate_raw.empty else 'Sample'
             st.session_state.climate_df = preprocess_dataframe(climate_raw if st.session_state.data_status['climate'] == 'Live' else get_sample_climate_data())
 
-            co2_raw = fetch_noaa_co2_data()
             st.session_state.data_status['co2'] = 'Live' if co2_raw is not None and not co2_raw.empty else 'Sample'
             st.session_state.co2_df = preprocess_dataframe(co2_raw if st.session_state.data_status['co2'] == 'Live' else get_sample_co2_data())
 
-            wb_employment_raw = fetch_worldbank_employment()
             st.session_state.data_status['employment'] = 'Live' if wb_employment_raw is not None and not wb_employment_raw.empty else 'Sample'
             st.session_state.employment_df = preprocess_dataframe(wb_employment_raw if st.session_state.data_status['employment'] == 'Live' else get_sample_employment_data())
             
