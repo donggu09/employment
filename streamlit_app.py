@@ -1,16 +1,16 @@
 """
-Streamlit Dashboard (Korean) - V10.2 (Timeout Fix)
-This version addresses potential `ConnectTimeoutError` issues by increasing the request timeout from 15 to 30 seconds. This makes the application more resilient to slow server responses, particularly from the NASA GISTEMP data source.
+Streamlit Dashboard (Korean) - V10.3 (Enhanced Error Handling)
+This version significantly improves error handling and user feedback. Instead of generic failure messages, it now provides specific, user-friendly diagnostics for different types of network errors (e.g., connection timeouts, HTTP errors), helping users understand the root cause of API failures.
 - Topic: 'The Impact of Climate Change on Employment'
 - Core Features:
   1) Live public data dashboards via API calls with guaranteed fallbacks.
   2) In-depth analysis tab with correlation and job scenario simulator.
   3) A "Job Impact" section comparing green vs. at-risk jobs.
 - UI/UX Enhancements:
-  - **V10.2 Definitive Fix**:
-    - **Increased Timeout**: Modified the `retry_get` function to use a 30-second timeout, reducing the likelihood of connection errors with slow-responding APIs.
+  - **V10.3 Definitive Fix**:
+    - **Enhanced Error Diagnostics**: Revamped the `retry_get` function to catch specific `requests` exceptions and generate clear, actionable error messages in Korean.
+    - **Increased Timeout**: Retained the 30-second request timeout for better resilience.
     - **Corrected CO2 Parser**: Retained the fix for the NOAA CO2 data parser.
-    - **Expanded Sample Data**: Retained the multi-year sample data.
     - **Robust Networking**: Retained the professional-grade requests.Session with a Retry adapter.
 """
 
@@ -63,35 +63,39 @@ _SESSION.mount("http://", _adapter)
 # ==============================================================================
 def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optional[requests.Response]:
     """
-    Robust GET request using the global session with a retry adapter.
-    Upon final failure, it logs the error to the session state for UI display.
+    Robust GET request with enhanced, user-friendly error handling.
+    Catches specific exceptions to provide clearer feedback on failures.
     """
     headers = {'User-Agent': 'Mozilla/5.0 (compatible; StreamlitApp/1.0)'}
+    error_message = ""
     try:
-        # [FIXED] Increased timeout from 15 to 30 seconds to handle slow server responses.
         resp = _SESSION.get(url, params=params, headers=headers, timeout=kwargs.get('timeout', 30), allow_redirects=True, verify=True)
         resp.raise_for_status()
         return resp
+    except requests.exceptions.ConnectTimeout:
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 연결 시간 초과:** 서버가 응답하지 않습니다. 일시적인 네트워크 문제일 수 있습니다."
+    except requests.exceptions.HTTPError as e:
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 서버 오류:** 서버에서 `{e.response.status_code}` 오류를 반환했습니다. 데이터 소스에 문제가 있을 수 있습니다."
     except requests.exceptions.RequestException as e:
-        # Reformat the error message to be more user-friendly
-        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 요청 실패:** {e}"
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 요청 실패:** 인터넷 연결을 확인하거나 잠시 후 다시 시도해주세요. ({e.__class__.__name__})"
+    
+    if error_message:
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
         if error_message not in st.session_state.api_errors:
             st.session_state.api_errors.append(error_message)
-        return None
+    return None
 
 @st.cache_data(ttl=3600)
 def preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty: return pd.DataFrame()
     d = df.copy()
-    # Ensure 'date' column exists and convert it to datetime
     if 'date' in d.columns:
         d['date'] = pd.to_datetime(d['date'], errors='coerce')
         d = d.dropna(subset=['date'])
         d = d[d['date'].dt.date <= TODAY]
     else:
-        return pd.DataFrame() # Return empty if no date column
+        return pd.DataFrame()
 
     d['value'] = pd.to_numeric(d['value'], errors='coerce')
     subset_cols = ['date', 'group'] if 'group' in d.columns else ['date']
@@ -113,7 +117,8 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
         content = resp.content.decode('utf-8', errors='replace')
         lines = content.split('\n')
         data_start_index = next((i for i, line in enumerate(lines) if line.strip().startswith('Year,')), -1)
-        if data_start_index == -1: return None
+        if data_start_index == -1:
+            raise ValueError("CSV에서 'Year,'로 시작하는 데이터 헤더를 찾을 수 없습니다.")
         df = pd.read_csv(io.StringIO("\n".join(lines[data_start_index:])))
         df.columns = [c.strip() for c in df.columns]
         df_long = df.melt(id_vars=['Year'], value_vars=[m for m in ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] if m in df.columns], var_name='Month', value_name='Anomaly')
@@ -219,7 +224,6 @@ def get_sample_employment_data() -> pd.DataFrame:
 # ==============================================================================
 # 3. UI RENDERING FUNCTIONS FOR TABS
 # ==============================================================================
-# --------------------------- Data Status UI -----------------------------
 def display_data_status():
     st.subheader("데이터 출처 현황")
     status = st.session_state.get('data_status', {})
@@ -238,17 +242,13 @@ def display_data_status():
         st.markdown(f"**World Bank (고용)**: { '🟢 실시간' if wb_status == 'Live' else '🟡 예시'}")
     st.markdown("---")
 
-# --------------------------- API Error UI -----------------------------
 def display_api_errors():
-    """Displays any API errors that were collected during the data loading process."""
     if st.session_state.get('api_errors'):
         st.subheader("⚠️ API 호출 또는 데이터 처리 오류")
         for error in st.session_state.api_errors:
             st.error(error, icon="🔥")
         st.markdown("---")
 
-
-# --------------------------- TAB 1: Global Trends -----------------------------
 def display_global_trends_tab(climate_df, co2_df, employment_df):
     st.header("📈 글로벌 기후 및 고용 동향")
     st.markdown("NASA, NOAA, World Bank의 최신 데이터를 시각화합니다.")
@@ -256,10 +256,8 @@ def display_global_trends_tab(climate_df, co2_df, employment_df):
     col1, col2, col3 = st.columns(3)
     if not climate_df.empty and not co2_df.empty and not employment_df.empty:
         try:
-            # Ensure date column is datetime before formatting
             climate_df['date'] = pd.to_datetime(climate_df['date'])
             co2_df['date'] = pd.to_datetime(co2_df['date'])
-
             latest_climate = climate_df.sort_values('date', ascending=False).iloc[0]
             latest_co2 = co2_df.sort_values('date', ascending=False).iloc[0]
             col1.metric(f"최신 온도 이상치 ({latest_climate['date']:%Y-%m})", f"{latest_climate['value']:.2f} ℃")
@@ -303,7 +301,6 @@ def display_global_trends_tab(climate_df, co2_df, employment_df):
             fig_comp = px.line(comp_df, x='year', y='value', color='group', labels={'year':'연도', 'value':'산업 고용 비율(%)', 'group':'국가'})
             st.plotly_chart(fig_comp, use_container_width=True)
 
-# ------------------------- TAB 2: In-Depth Analysis ---------------------------
 def display_analysis_tab(climate_df, co2_df, employment_df):
     st.header("🔍 심층 분석: 상관관계와 미래 시뮬레이션")
     
@@ -345,26 +342,17 @@ def display_analysis_tab(climate_df, co2_df, employment_df):
                 plot_df[x_var] = (plot_df[x_var] - plot_df[x_var].min()) / (plot_df[x_var].max() - plot_df[x_var].min())
                 plot_df[y_var] = (plot_df[y_var] - plot_df[y_var].min()) / (plot_df[y_var].max() - plot_df[y_var].min())
             
-            # Create a figure with a secondary y-axis
             fig_corr = go.Figure()
-            fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[x_var], name=corr_choice,
-                                          line=dict(color='#d62728')))
-            fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[y_var], name='산업 고용(전세계 중앙값)', yaxis='y2',
-                                          line=dict(color='#1f77b4')))
+            fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[x_var], name=corr_choice, line=dict(color='#d62728')))
+            fig_corr.add_trace(go.Scatter(x=plot_df['year'], y=plot_df[y_var], name='산업 고용(전세계 중앙값)', yaxis='y2', line=dict(color='#1f77b4')))
 
-            # Update layout for the secondary y-axis
             fig_corr.update_layout(
                 xaxis_title="연도",
                 yaxis_title=f"{corr_choice} ({'℃' if x_var == 'temp_anomaly' else 'ppm'})" if not normalize else "정규화된 값",
-                yaxis2=dict(
-                    title="산업 고용 비율 (%)" if not normalize else "정규화된 값",
-                    overlaying="y",
-                    side="right"
-                ),
+                yaxis2=dict(title="산업 고용 비율 (%)" if not normalize else "정규화된 값", overlaying="y", side="right"),
                 legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
             )
             st.plotly_chart(fig_corr, use_container_width=True)
-
         except Exception as e:
             st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
 
@@ -386,7 +374,6 @@ def display_analysis_tab(climate_df, co2_df, employment_df):
         fig = px.line(user_jobs_df, x='date', y='value', color='group', color_discrete_map={'녹색 일자리(만 개)': '#2ca02c', '화석연료 일자리(만 개)': '#7f7f7f'})
         st.plotly_chart(fig, use_container_width=True)
 
-# --------------------------- TAB 3: Job Impact --------------------------------
 def display_job_impact_tab():
     st.header("⚖️ 녹색 전환: 기회와 위험 직무 비교")
     df_op = pd.DataFrame({ '직무': ['기후 데이터 분석가', '탄소배출권 전문가', '신재생 에너지 개발자', 'ESG 컨설턴트', '스마트팜 전문가'], '성장 가능성 (점수)': [95, 90, 88, 85, 82] })
@@ -401,47 +388,35 @@ def display_job_impact_tab():
         fig_risk = px.bar(df_r, x='위험도 (점수)', y='직무', orientation='h', color='위험도 (점수)', color_continuous_scale=px.colors.sequential.Reds)
         st.plotly_chart(fig_risk, use_container_width=True)
 
-
-# ----------------------- TAB 4: Career Simulation Game ------------------------
 def display_career_game_tab():
     st.header("🚀 나의 미래 설계하기 (커리어 시뮬레이션)")
     st.info("당신의 선택이 10년 후 커리어와 환경에 어떤 영향을 미치는지 시뮬레이션 해보세요!")
 
     with st.form("career_game_form"):
-        # --- Stage 1: University ---
         with st.expander("🎓 1단계: 대학생", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                major = st.radio("주요 전공을 선택하세요:",
-                                 ("컴퓨터공학 (AI 트랙)", "기계공학", "경제학"), key="major")
+                major = st.radio("주요 전공을 선택하세요:", ("컴퓨터공학 (AI 트랙)", "기계공학", "경제학"), key="major")
             with col2:
-                club = st.radio("핵심 동아리 활동은 무엇인가요?",
-                                ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
+                club = st.radio("핵심 동아리 활동은 무엇인가요?", ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
             with col3:
-                project = st.radio("졸업 프로젝트 주제는 무엇인가요?",
-                                   ("탄소 배출량 예측 AI 모델", "고효율 내연기관 설계", "ESG 경영사례 분석"), key="project")
+                project = st.radio("졸업 프로젝트 주제는 무엇인가요?", ("탄소 배출량 예측 AI 모델", "고효율 내연기관 설계", "ESG 경영사례 분석"), key="project")
 
-        # --- Stage 2: Early Career ---
         with st.expander("💼 2단계: 사회초년생", expanded=True):
             col4, col5, col6 = st.columns(3)
             with col4:
-                first_job = st.radio("첫 직장을 선택하세요:",
-                                     ("에너지 IT 스타트업", "대기업 정유회사", "금융권 애널리스트"), key="first_job")
+                first_job = st.radio("첫 직장을 선택하세요:", ("에너지 IT 스타트업", "대기업 정유회사", "금융권 애널리스트"), key="first_job")
             with col5:
-                skill_dev = st.radio("어떤 역량을 집중적으로 키울 건가요?",
-                                     ("클라우드 기반 데이터 분석", "전통 공정 관리", "재무 분석 및 투자"), key="skill_dev")
+                skill_dev = st.radio("어떤 역량을 집중적으로 키울 건가요?", ("클라우드 기반 데이터 분석", "전통 공정 관리", "재무 분석 및 투자"), key="skill_dev")
             with col6:
-                side_project = st.radio("개인적으로 진행할 프로젝트는?",
-                                        ("오픈소스 기후 데이터 시각화", "자동차 연비 개선 연구", "주식 투자 포트폴리오 관리"), key="side_project")
+                side_project = st.radio("개인적으로 진행할 프로젝트는?", ("오픈소스 기후 데이터 시각화", "자동차 연비 개선 연구", "주식 투자 포트폴리오 관리"), key="side_project")
         
         submitted = st.form_submit_button("🚀 나의 미래 확인하기")
 
     if submitted:
-        # --- Scoring Logic ---
         career_score, green_score = 0, 0
         skills = {"데이터 분석":0, "정책/경영":0, "엔지니어링":0, "금융/경제":0}
 
-        # Stage 1 Scoring
         if major == "컴퓨터공학 (AI 트랙)": career_score += 20; green_score += 10; skills["데이터 분석"] += 2
         elif major == "기계공학": career_score += 10; green_score += 0; skills["엔지니어링"] += 2
         else: career_score += 15; green_score += 5; skills["금융/경제"] += 2
@@ -454,7 +429,6 @@ def display_career_game_tab():
         elif project == "고효율 내연기관 설계": career_score += 5; green_score -= 10; skills["엔지니어링"] += 1
         else: career_score += 10; green_score += 10; skills["정책/경영"] += 1; skills["금융/경제"] += 1
 
-        # Stage 2 Scoring
         if first_job == "에너지 IT 스타트업": career_score += 15; green_score += 20
         elif first_job == "대기업 정유회사": career_score += 20; green_score -= 10
         else: career_score += 15; green_score += 5
@@ -467,7 +441,6 @@ def display_career_game_tab():
         elif side_project == "자동차 연비 개선 연구": career_score += 5; green_score -= 5; skills["엔지니어링"] += 1
         else: career_score += 5; green_score += 0; skills["금융/경제"] += 1
         
-        # --- Determine Job Title ---
         if green_score >= 50 and career_score >= 70: job_title = "기후 기술 최고 전문가"
         elif green_score >= 30 and career_score >= 60: job_title = "그린 에너지 전략가"
         elif career_score >= 70: job_title = "산업 전문가"
@@ -489,7 +462,6 @@ def display_career_game_tab():
                 st.plotly_chart(fig, use_container_width=True)
                 st.caption("나의 역량 레이더 차트")
 
-# ----------------------- TAB 5: Survey & Feedback ------------------------
 def display_survey_tab():
     st.header("📝 설문 및 의견")
     st.markdown("기후 변화와 미래 직업에 대한 여러분의 소중한 의견을 들려주세요!")
@@ -532,19 +504,13 @@ def display_survey_tab():
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    # [FIXED] Updated title to match version V10.2
-    st.title("기후 변화와 미래 커리어 대시보드 V10.2 (타임아웃 수정) 🌍💼")
+    st.title("기후 변화와 미래 커리어 대시보드 V10.3 (오류 핸들링 강화) 🌍💼")
 
-    # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
         st.session_state.data_status = {}
-        st.session_state.api_errors = [] # Initialize error list
+        st.session_state.api_errors = []
 
         with st.spinner("실시간 데이터를 불러오는 중입니다..."):
-            
-            # --- Unified Data Pipeline ---
-            
-            # Climate Data
             climate_raw = fetch_gistemp_csv()
             if climate_raw is not None and not climate_raw.empty:
                 st.session_state.data_status['climate'] = 'Live'
@@ -553,7 +519,6 @@ def main():
                 st.session_state.data_status['climate'] = 'Sample'
             st.session_state.climate_df = preprocess_dataframe(climate_raw)
 
-            # CO2 Data
             co2_raw = fetch_noaa_co2_data()
             if co2_raw is not None and not co2_raw.empty:
                 st.session_state.data_status['co2'] = 'Live'
@@ -562,7 +527,6 @@ def main():
                 st.session_state.data_status['co2'] = 'Sample'
             st.session_state.co2_df = preprocess_dataframe(co2_raw)
 
-            # Employment Data
             wb_employment_raw = fetch_worldbank_employment()
             if wb_employment_raw is not None and not wb_employment_raw.empty:
                 st.session_state.data_status['employment'] = 'Live'
@@ -575,11 +539,9 @@ def main():
             time.sleep(0.5)
             st.rerun()
     
-    # --- Display Status and Error Panels ---
     display_data_status()
     display_api_errors()
     
-    # --- Tabbed Interface ---
     tabs = st.tabs(["📊 글로벌 동향", "🔍 심층 분석", "⚖️ 직무 영향 분석", "🚀 나의 미래 설계하기", "📝 설문 및 의견"])
     with tabs[0]:
         display_global_trends_tab(st.session_state.climate_df, st.session_state.co2_df, st.session_state.employment_df)
@@ -594,4 +556,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
