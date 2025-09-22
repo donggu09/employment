@@ -8,3 +8,4 @@ seaborn>=0.12
 python-dateutil>=2.8
 kaggle>=1.5.12
 streamlit-lottie
+openpyxl
