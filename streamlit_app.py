@@ -1,14 +1,15 @@
 """
-Streamlit Dashboard (Korean) - V10.0 (Correlation Fix with Expanded Samples)
-This version resolves the correlation analysis error by expanding the embedded sample data to ensure a sufficient multi-year overlap for analysis, even when live APIs fail. This is the definitive stable version.
+Streamlit Dashboard (Korean) - V10.1 (CO2 API Fix)
+This version resolves the NOAA CO2 API parsing error by correcting the column count mismatch. The data source provides 8 columns, while the previous code expected 7. This version ensures the data is parsed correctly.
 - Topic: 'The Impact of Climate Change on Employment'
 - Core Features:
   1) Live public data dashboards via API calls with guaranteed fallbacks.
   2) In-depth analysis tab with correlation and job scenario simulator.
   3) A "Job Impact" section comparing green vs. at-risk jobs.
 - UI/UX Enhancements:
-  - **V10.0 Definitive Fix**:
-    - **Expanded Sample Data**: Updated all embedded sample datasets to span multiple overlapping years (2020-2023), fixing the "data period too short" error in the correlation analysis tab.
+  - **V10.1 Definitive Fix**:
+    - **Corrected CO2 Parser**: Updated the `fetch_noaa_co2_data` function to handle all 8 columns from the source text file, fixing the parsing error.
+    - **Expanded Sample Data**: Retained the multi-year (2020-2023) sample data to ensure correlation analysis works even if APIs fail.
     - **Unified Data Pipeline**: Ensures both live and sample data undergo the same validation.
     - **Robust Networking**: Retained the professional-grade requests.Session with a Retry adapter.
     - **Data Status Panel**: A clear UI panel informs the user about the source of the data.
@@ -42,7 +43,6 @@ TODAY = datetime.datetime.now().date()
 CONFIG = {
     "nasa_gistemp_url": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "worldbank_api_url": "https://api.worldbank.org/v2/country/all/indicator/SL.IND.EMPL.ZS",
-    # [FIXED] Correct, stable URL for NOAA CO2 data
     "noaa_co2_url": "https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt",
 }
 
@@ -80,8 +80,6 @@ def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optiona
         if error_message not in st.session_state.api_errors:
             st.session_state.api_errors.append(error_message)
         return None
-
-# [REMOVED] Unused load_lottieurl function
 
 @st.cache_data(ttl=3600)
 def preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -125,28 +123,43 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
         df_final['value'] = pd.to_numeric(df_long['Anomaly'], errors='coerce')
         df_final['group'] = '지구 평균 온도 이상치(℃)'
         return df_final.dropna(subset=['date', 'value'])
-    except Exception: return None
+    except Exception as e:
+        if 'api_errors' not in st.session_state:
+            st.session_state.api_errors = []
+        st.session_state.api_errors.append(f"**NASA GISTEMP 데이터 파싱 오류:** `{e}`")
+        return None
 
-# [FIXED] Revamped function to parse the new data format correctly
+# [FIXED] Corrected the parser to handle 8 columns from the NOAA data file.
 @st.cache_data(ttl=3600)
 def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
     resp = retry_get(CONFIG["noaa_co2_url"])
     if resp is None: return None
     try:
-        # The new file has comments starting with '#' and is whitespace-delimited
+        # The data file has 8 columns, but the original code provided names for only 7.
+        # This mismatch causes the pandas parser to fail.
+        # The corrected list below includes all 8 column names.
+        column_names = [
+            'year', 'month', 'decimal_date', 'average', 'interpolated',
+            'trend', 'days', 'uncertainty'
+        ]
         df = pd.read_csv(
             io.StringIO(resp.content.decode('utf-8')),
             comment='#',
             delim_whitespace=True,
             header=None,
-            names=['year', 'month', 'decimal_date', 'average', 'interpolated', 'trend', 'days']
+            names=column_names # Use the corrected list of names
         )
         # Create a 'date' column for the first day of the month
         df['date'] = pd.to_datetime(df['year'].astype(str) + '-' + df['month'].astype(str) + '-01')
         df_final = df[['date', 'interpolated']].rename(columns={'interpolated': 'value'})
         df_final['group'] = '대기 중 CO₂ 농도 (ppm)'
         return df_final[df_final['value'] > 0]
-    except Exception: return None
+    except Exception as e:
+        # Log the specific parsing error for better debugging
+        if 'api_errors' not in st.session_state:
+            st.session_state.api_errors = []
+        st.session_state.api_errors.append(f"**NOAA CO₂ 데이터 파싱 오류:** `{e}`")
+        return None
 
 @st.cache_data(ttl=3600)
 def fetch_worldbank_employment() -> Optional[pd.DataFrame]:
@@ -160,7 +173,11 @@ def fetch_worldbank_employment() -> Optional[pd.DataFrame]:
         df.columns = ['group', 'iso_code', 'year', 'value']
         df['date'] = pd.to_datetime(df['year'] + '-01-01', errors='coerce')
         return df[['date', 'group', 'iso_code', 'value']].dropna()
-    except Exception: return None
+    except Exception as e:
+        if 'api_errors' not in st.session_state:
+            st.session_state.api_errors = []
+        st.session_state.api_errors.append(f"**World Bank 데이터 파싱 오류:** `{e}`")
+        return None
 
 # --- [EXPANDED] Embedded Sample Data Fallbacks ---
 @st.cache_data
@@ -227,11 +244,11 @@ def display_data_status():
         st.markdown(f"**World Bank (고용)**: { '🟢 실시간' if wb_status == 'Live' else '🟡 예시'}")
     st.markdown("---")
 
-# --------------------------- API Error UI [NEW] -----------------------------
+# --------------------------- API Error UI -----------------------------
 def display_api_errors():
     """Displays any API errors that were collected during the data loading process."""
     if st.session_state.get('api_errors'):
-        st.subheader("⚠️ API 호출 오류")
+        st.subheader("⚠️ API 호출 또는 데이터 처리 오류")
         for error in st.session_state.api_errors:
             st.error(error, icon="🔥")
         st.markdown("---")
@@ -391,7 +408,7 @@ def display_job_impact_tab():
         st.plotly_chart(fig_risk, use_container_width=True)
 
 
-# ----------------------- TAB 4: Career Simulation Game (REVAMPED) ------------------------
+# ----------------------- TAB 4: Career Simulation Game ------------------------
 def display_career_game_tab():
     st.header("🚀 나의 미래 설계하기 (커리어 시뮬레이션)")
     st.info("당신의 선택이 10년 후 커리어와 환경에 어떤 영향을 미치는지 시뮬레이션 해보세요!")
@@ -405,7 +422,7 @@ def display_career_game_tab():
                                  ("컴퓨터공학 (AI 트랙)", "기계공학", "경제학"), key="major")
             with col2:
                 club = st.radio("핵심 동아리 활동은 무엇인가요?",
-                                 ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
+                                ("신재생에너지 정책 토론", "코딩 스터디", "문학 비평"), key="club")
             with col3:
                 project = st.radio("졸업 프로젝트 주제는 무엇인가요?",
                                    ("탄소 배출량 예측 AI 모델", "고효율 내연기관 설계", "ESG 경영사례 분석"), key="project")
@@ -521,8 +538,8 @@ def display_survey_tab():
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    # [FIXED] Updated title to match version V10.0
-    st.title("기후 변화와 미래 커리어 대시보드 V10.0 (최종 안정화) 🌍💼")
+    # [FIXED] Updated title to match version V10.1
+    st.title("기후 변화와 미래 커리어 대시보드 V10.1 (API 수정) 🌍💼")
 
     # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
