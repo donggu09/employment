@@ -1,18 +1,17 @@
 """
-Streamlit Dashboard (Korean) - V10.1 (CO2 API Fix)
-This version resolves the NOAA CO2 API parsing error by correcting the column count mismatch. The data source provides 8 columns, while the previous code expected 7. This version ensures the data is parsed correctly.
+Streamlit Dashboard (Korean) - V10.2 (Timeout Fix)
+This version addresses potential `ConnectTimeoutError` issues by increasing the request timeout from 15 to 30 seconds. This makes the application more resilient to slow server responses, particularly from the NASA GISTEMP data source.
 - Topic: 'The Impact of Climate Change on Employment'
 - Core Features:
   1) Live public data dashboards via API calls with guaranteed fallbacks.
   2) In-depth analysis tab with correlation and job scenario simulator.
   3) A "Job Impact" section comparing green vs. at-risk jobs.
 - UI/UX Enhancements:
-  - **V10.1 Definitive Fix**:
-    - **Corrected CO2 Parser**: Updated the `fetch_noaa_co2_data` function to handle all 8 columns from the source text file, fixing the parsing error.
-    - **Expanded Sample Data**: Retained the multi-year (2020-2023) sample data to ensure correlation analysis works even if APIs fail.
-    - **Unified Data Pipeline**: Ensures both live and sample data undergo the same validation.
+  - **V10.2 Definitive Fix**:
+    - **Increased Timeout**: Modified the `retry_get` function to use a 30-second timeout, reducing the likelihood of connection errors with slow-responding APIs.
+    - **Corrected CO2 Parser**: Retained the fix for the NOAA CO2 data parser.
+    - **Expanded Sample Data**: Retained the multi-year sample data.
     - **Robust Networking**: Retained the professional-grade requests.Session with a Retry adapter.
-    - **Data Status Panel**: A clear UI panel informs the user about the source of the data.
 """
 
 import io
@@ -69,12 +68,13 @@ def retry_get(url: str, params: Optional[Dict] = None, **kwargs: Any) -> Optiona
     """
     headers = {'User-Agent': 'Mozilla/5.0 (compatible; StreamlitApp/1.0)'}
     try:
-        resp = _SESSION.get(url, params=params, headers=headers, timeout=kwargs.get('timeout', 15), allow_redirects=True, verify=True)
+        # [FIXED] Increased timeout from 15 to 30 seconds to handle slow server responses.
+        resp = _SESSION.get(url, params=params, headers=headers, timeout=kwargs.get('timeout', 30), allow_redirects=True, verify=True)
         resp.raise_for_status()
         return resp
     except requests.exceptions.RequestException as e:
         # Reformat the error message to be more user-friendly
-        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 요청 실패:** 404 Client Error: Not Found for url: `{url}`" if '404' in str(e) else f"**API (`{url.split('//')[1].split('/')[0]}`) 요청 실패:** `{e}`"
+        error_message = f"**API(`{url.split('//')[1].split('/')[0]}`) 요청 실패:** {e}"
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
         if error_message not in st.session_state.api_errors:
@@ -129,15 +129,11 @@ def fetch_gistemp_csv() -> Optional[pd.DataFrame]:
         st.session_state.api_errors.append(f"**NASA GISTEMP 데이터 파싱 오류:** `{e}`")
         return None
 
-# [FIXED] Corrected the parser to handle 8 columns from the NOAA data file.
 @st.cache_data(ttl=3600)
 def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
     resp = retry_get(CONFIG["noaa_co2_url"])
     if resp is None: return None
     try:
-        # The data file has 8 columns, but the original code provided names for only 7.
-        # This mismatch causes the pandas parser to fail.
-        # The corrected list below includes all 8 column names.
         column_names = [
             'year', 'month', 'decimal_date', 'average', 'interpolated',
             'trend', 'days', 'uncertainty'
@@ -147,15 +143,13 @@ def fetch_noaa_co2_data() -> Optional[pd.DataFrame]:
             comment='#',
             delim_whitespace=True,
             header=None,
-            names=column_names # Use the corrected list of names
+            names=column_names
         )
-        # Create a 'date' column for the first day of the month
         df['date'] = pd.to_datetime(df['year'].astype(str) + '-' + df['month'].astype(str) + '-01')
         df_final = df[['date', 'interpolated']].rename(columns={'interpolated': 'value'})
         df_final['group'] = '대기 중 CO₂ 농도 (ppm)'
         return df_final[df_final['value'] > 0]
     except Exception as e:
-        # Log the specific parsing error for better debugging
         if 'api_errors' not in st.session_state:
             st.session_state.api_errors = []
         st.session_state.api_errors.append(f"**NOAA CO₂ 데이터 파싱 오류:** `{e}`")
@@ -538,8 +532,8 @@ def display_survey_tab():
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    # [FIXED] Updated title to match version V10.1
-    st.title("기후 변화와 미래 커리어 대시보드 V10.1 (API 수정) 🌍💼")
+    # [FIXED] Updated title to match version V10.2
+    st.title("기후 변화와 미래 커리어 대시보드 V10.2 (타임아웃 수정) 🌍💼")
 
     # --- Data Loading ---
     if 'data_loaded' not in st.session_state:
@@ -600,3 +594,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
