@@ -298,7 +298,7 @@ def display_global_trends_tab(climate_df, co2_df, employment_df):
             fig = px.line(climate_df, x='date', y='value', labels={'date': '', 'value': '온도 이상치 (°C)'}, color_discrete_sequence=['#d62728'])
             st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.subheader("💨 대기 중 CO₂ 농도 (마우나로아)")
+        st.subheader("💨 대기 중 CO₂ 농도 (마우나로아 관측소)")
         if not co2_df.empty:
             fig = px.line(co2_df, x='date', y='value', labels={'date': '', 'value': 'CO₂ (ppm)'}, color_discrete_sequence=['#1f77b4'])
             st.plotly_chart(fig, use_container_width=True)
@@ -526,7 +526,7 @@ def display_survey_tab():
 # 4. MAIN APPLICATION LOGIC
 # ==============================================================================
 def main():
-    st.title("기후 변화와 미래 커리어 대시보드 V10.5 (예시 데이터 확장) 🌍💼")
+    st.title("기후 변화와 미래 커리어 대시보드 V10.5 🌍💼")
 
     if 'data_loaded' not in st.session_state:
         st.session_state.data_status = {}
